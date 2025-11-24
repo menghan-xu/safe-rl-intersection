@@ -10,6 +10,8 @@ import torch.optim as optim
 from tqdm import tqdm
 import pathlib
 import matplotlib.pyplot as plt
+from matplotlib.animation import FuncAnimation, PillowWriter
+import datetime # Added for timestamp
 
 # Imports
 from env import IntersectionEnv  
@@ -20,9 +22,9 @@ from models import ContinuousActorCritic
 # ==========================================
 class IntersectionGymAdapter(gym.Env):
     def __init__(self, agent_data_list):
-        self.env = IntersectionEnv(target_pos=[1.5, 0.0], agent_data_list=agent_data_list, dt=0.1) #TODO: check target_pos
+        self.env = IntersectionEnv(target_pos=[1.25, 0.0], agent_data_list=agent_data_list, dt=0.1) 
         self.observation_space = gym.spaces.Box(low=-np.inf, high=np.inf, shape=(8,), dtype=np.float32)
-        self.action_space = gym.spaces.Box(low=-5.0, high=5.0, shape=(1,), dtype=np.float32)
+        self.action_space = gym.spaces.Box(low=-1.0, high=1.0, shape=(1,), dtype=np.float32)
 
     def reset(self, seed=None, options=None):
         obs = self.env.reset()
@@ -38,6 +40,128 @@ class IntersectionGymAdapter(gym.Env):
 # ==========================================
 # 2. Lag-PPO Utils
 # ==========================================
+
+def make_animation(policy, env, device, filename="trajectory.gif"):
+    """
+    Runs one episode and saves a GIF animation with Velocity/Accel dashboard.
+    """
+    print(f"Generating animation: {filename}...")
+    
+    # 1. Collect Data
+    obs, _ = env.reset()
+    obs_tensor = torch.from_numpy(obs).float().to(device).unsqueeze(0)
+    
+    # History containers
+    ego_pos_hist = []
+    agent_pos_hist = []
+    
+    ego_v_hist = []
+    ego_a_hist = [] # Action is acceleration
+    agent_v_hist = []
+    
+    done = False
+    while not done:
+        # Get Action
+        with torch.no_grad():
+            action, _, _, _, _ = policy.action_value(obs_tensor)
+        action_scalar = action.cpu().numpy().item()
+        
+        # Step Environment
+        next_obs, _, terminated, truncated, _ = env.step(action_scalar)
+        
+        # Get Render Info (After step to get updated state)
+        render_info = env.env.render() 
+        
+        # Record Data
+        ego_pos_hist.append(render_info['ego_pos'])
+        agent_pos_hist.append(render_info['agent_pos'])
+        
+        ego_v_hist.append(render_info['ego_v'])
+        ego_a_hist.append(action_scalar) # Current action is accel
+        agent_v_hist.append(render_info['agent_v'])
+        
+        done = terminated or truncated
+        obs_tensor = torch.from_numpy(next_obs).float().to(device).unsqueeze(0)
+
+    # 2. Setup Plot
+    fig, ax = plt.subplots(figsize=(6, 6)) 
+    
+    # --- [UPDATED] Plot Limits ---
+    # Zoom in to the 3x3m intersection area
+    ax.set_xlim(-2, 2) 
+    ax.set_ylim(-2, 2) 
+    
+    ax.set_aspect('equal')
+    ax.grid(True, linestyle='--', alpha=0.6)
+    ax.set_title(f"Intersection Lag-PPO\n(Episode Length: {len(ego_pos_hist)} steps)")
+
+    # Draw Lanes (Static)
+    # Drawn slightly larger than view to ensure they cover the edges
+    ax.plot([-3, 3], [0, 0], 'k--', alpha=0.3, lw=1) # Horizontal lane center
+    ax.plot([0.5, 0.5], [-3, 3], 'k--', alpha=0.3, lw=1) # Vertical lane center (Ego path)
+
+    # Initialize Objects
+    ego_dot, = ax.plot([], [], 'bo', label='Ego', markersize=12, zorder=5)
+    agent_dot, = ax.plot([], [], 'ro', label='Agent', markersize=12, zorder=5)
+    ego_line, = ax.plot([], [], 'b-', alpha=0.3, lw=2)
+    agent_line, = ax.plot([], [], 'r-', alpha=0.3, lw=2)
+    
+    # Dashboard Text (Positioned relative to the new limits)
+    # Top-left corner of the view is roughly (-1.8, 1.8)
+    status_text = ax.text(
+        -1.9, 1.9, "", 
+        fontsize=9, 
+        verticalalignment='top',
+        bbox=dict(boxstyle="round,pad=0.3", fc="white", ec="gray", alpha=0.9)
+    )
+    
+    ax.legend(loc='lower right')
+
+    def update(frame):
+        # 1. Update Positions
+        e_pos = ego_pos_hist[frame]
+        a_pos = agent_pos_hist[frame]
+        
+        ego_dot.set_data([e_pos[0]], [e_pos[1]])
+        agent_dot.set_data([a_pos[0]], [a_pos[1]])
+        
+        # 2. Update Trails
+        e_path = np.array(ego_pos_hist[:frame+1])
+        a_path = np.array(agent_pos_hist[:frame+1])
+        ego_line.set_data(e_path[:, 0], e_path[:, 1])
+        agent_line.set_data(a_path[:, 0], a_path[:, 1])
+        
+        # 3. Update Dashboard Text
+        e_v = ego_v_hist[frame]
+        e_a = ego_a_hist[frame]
+        a_v = agent_v_hist[frame]
+        
+        info_str = (
+            f"Step: {frame}\n"
+            f"----------------\n"
+            f"EGO (Blue)\n"
+            f"Vel : {e_v:.2f} m/s\n"
+            f"Acc : {e_a:.2f} m/s²\n"
+            f"----------------\n"
+            f"AGENT (Red)\n"
+            f"Vel : {a_v:.2f} m/s"
+        )
+        status_text.set_text(info_str)
+        
+        return ego_dot, agent_dot, ego_line, agent_line, status_text
+
+    # Create Animation
+    anim = FuncAnimation(fig, update, frames=len(ego_pos_hist), interval=100, blit=True)
+    
+    # Save
+    try:
+        writer = PillowWriter(fps=10) # Slower FPS to read text easily
+        anim.save(filename, writer=writer)
+        print(f"Animation saved: {filename}")
+    except Exception as e:
+        print(f"Animation save failed: {e}")
+    
+    plt.close(fig)
 
 def compute_gae_returns(rewards, values, dones, gamma, gae_lambda):
     """
@@ -74,7 +198,7 @@ def lagrangian_ppo_loss(agent, states, actions, adv_total, logprobs, ret_r, ret_
     # 2. Value Loss 1: Task Reward (MSE)
     L_VR = (val_r - ret_r).pow(2).mean()
 
-    # 3. Value Loss 2: Safety Cost (MSE) [cite: 59]
+    # [cite_start]3. Value Loss 2: Safety Cost (MSE) [cite: 59]
     L_VC = (val_c - ret_c).pow(2).mean()
     
     # 4. Entropy Loss
@@ -88,7 +212,7 @@ def lagrangian_ppo_loss(agent, states, actions, adv_total, logprobs, ret_r, ret_
 # 3. Main Loop
 # ==========================================
 
-def train(args, expert_data):
+def train(args, expert_data, log_dir): # <--- ADDED log_dir argument
     random.seed(args.seed)
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
@@ -132,7 +256,7 @@ def train(args, expert_data):
     obs, _ = env.reset(seed=args.seed)
     obs = torch.from_numpy(obs).float().to(device)
 
-    pathlib.Path(f"learned_policies/{args.env_id}/").mkdir(parents=True, exist_ok=True)
+    # Path creation moved to main block (no longer here)
     eval_rewards = []
     
     print("Start Training...")
@@ -158,10 +282,12 @@ def train(args, expert_data):
             # Extract cost from info
             # SyncVectorEnv returns infos as a structure that can be indexed directly if using gymnasium > 0.29
             # Fallback logic for safety:
-            if 'cost' in infos:
-                cost_batch = infos['cost']
+            if isinstance(infos, dict):
+                if 'cost' in infos:
+                    cost_batch = infos['cost']
+                else:
+                    cost_batch = np.zeros(args.num_envs)
             else:
-                # If infos is a tuple of dicts
                 cost_batch = np.array([i.get('cost', 0.0) for i in infos])
                 
             costs[t] = torch.from_numpy(cost_batch).float().to(device)
@@ -236,22 +362,29 @@ def train(args, expert_data):
         lagrange_lambda = torch.clamp(lagrange_lambda, min=0.0)
 
         if iteration % 10 == 0:
-
             avg_rew = val(policy, eval_env, device)
             print(f"Iter {iteration} | Reward: {avg_rew:.2f} | Lambda: {lagrange_lambda.item():.4f} | Cost: {est_episode_cost:.2f}")
             eval_rewards.append(avg_rew)
             
-            # Plot
+            # Plot using log_dir
             plt.figure()
             iters = list(range(10, len(eval_rewards)*10 + 1, 10))
             plt.plot(iters, eval_rewards)
-            plt.savefig(f'learned_policies/{args.env_id}/eval_reward_curve.png')
+            plt.savefig(f'{log_dir}/eval_reward_curve.png')
             plt.close()
-
+            
+        # Save Animation using log_dir
+        if iteration % 50 == 0:
+                gif_path = f"{log_dir}/iter_{iteration}.gif"
+                # Note: pass eval_env, not the vector env
+                make_animation(policy, eval_env, device, filename=gif_path)
+                
+        # Save Checkpoint using log_dir
         if args.checkpoint and iteration % 50 == 0:
-            torch.save(policy.state_dict(), f"learned_policies/{args.env_id}/model_{iteration}.pt")
+            torch.save(policy.state_dict(), f"{log_dir}/model_{iteration}.pt")
     
-    torch.save(policy.state_dict(), f"learned_policies/{args.env_id}/final_model.pt")
+    # Save Final Model using log_dir
+    torch.save(policy.state_dict(), f"{log_dir}/final_model.pt")
     print("Training Finished!")
     return policy
 
@@ -300,6 +433,15 @@ if __name__ == '__main__':
 
     args = parser.parse_args()  
     
+    # --- Create Timestamped Directory ---
+    timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    run_name = f"{args.env_id}_{timestamp}"
+    log_dir = f"learned_policies/{run_name}/"
+    
+    # Create the directory
+    pathlib.Path(log_dir).mkdir(parents=True, exist_ok=True)
+    print(f" Saving results to: {log_dir}")
+    
     data_path = "../../data/expert_agent_trajs.npy"
     if not os.path.exists(data_path):
         print(f"Error: {data_path} not found! Please run process_data.py first.")
@@ -307,4 +449,6 @@ if __name__ == '__main__':
         
     print(f"Loading expert data from {data_path}...")
     expert_data = np.load(data_path, allow_pickle=True)
-    train(args, expert_data)
+    
+    # Pass log_dir to train function
+    train(args, expert_data, log_dir)

@@ -10,7 +10,7 @@ def layer_init(layer, std=0.5, bias_const=0.0):
     return layer
 
 class ContinuousActorCritic(nn.Module):
-    def __init__(self, state_dim, action_dim, max_action=5.0):
+    def __init__(self, state_dim, action_dim, max_action=1.0):
         super().__init__()
         self.max_action = max_action
         
