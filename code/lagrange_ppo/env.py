@@ -136,8 +136,15 @@ class IntersectionEnv:
             agent_info = torch.tensor(agent_info, dtype=torch.float32)
 
         agent_mu = agent_info[:2]      
-        agent_sigma = torch.diag(agent_info[4:6]**2) 
+        # agent_sigma = torch.diag(agent_info[4:6]**2) 
+        raw_std_x = agent_info[4]
+        raw_std_y = agent_info[5]
+        
+        # Enforce a minimum standard deviation of 0.8m (approx half car width + margin)
+        safe_std_x = torch.clamp(raw_std_x, min=0.3)
+        safe_std_y = torch.clamp(raw_std_y, min=0.3)
 
+        agent_sigma = torch.diag(torch.stack([safe_std_x**2, safe_std_y**2]))
         # Calculate Step Reward and Safety Cost
         reward, cost = self._compute_reward_and_cost(self.state, accel, agent_mu, agent_sigma)
         
@@ -208,13 +215,15 @@ class IntersectionEnv:
         # Calculate distance squared
         mahalanobis_sq = torch.matmul(delta, torch.matmul(inv_sigma, delta))
         
-        # Cost Formulation: 1 / (dist^2 + epsilon)
-        epsilon = 0.01
-        raw_cost = 1.0 / (mahalanobis_sq + epsilon)
+        # # Cost Formulation: 1 / (dist^2 + epsilon)
+        # epsilon = 0.01
+        # raw_cost = 1.0 / (mahalanobis_sq + epsilon)
         
-        # Clamp cost to prevent numerical explosion during collisions
-        # Max cost = 100.0
-        safety_cost = torch.clamp(raw_cost, max=100.0).item()
+        # # Clamp cost to prevent numerical explosion during collisions
+        # # Max cost = 100.0
+        # safety_cost = torch.clamp(raw_cost, max=100.0).item()
+        safety_cost = torch.exp(-0.5 * mahalanobis_sq).item()
+        safety_cost = safety_cost * 100.0
 
         return performance_reward.item(), safety_cost
 
