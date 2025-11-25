@@ -141,8 +141,8 @@ class IntersectionEnv:
         raw_std_y = agent_info[5]
         
         # Enforce a minimum standard deviation of 0.8m (approx half car width + margin)
-        safe_std_x = torch.clamp(raw_std_x, min=0.3)
-        safe_std_y = torch.clamp(raw_std_y, min=0.3)
+        safe_std_x = torch.clamp(raw_std_x, min=0.01)
+        safe_std_y = torch.clamp(raw_std_y, min=0.01)
 
         agent_sigma = torch.diag(torch.stack([safe_std_x**2, safe_std_y**2]))
         # Calculate Step Reward and Safety Cost

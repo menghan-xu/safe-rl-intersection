@@ -14,7 +14,7 @@ from models import ContinuousActorCritic
 # CONFIGURATION
 # ==========================================
 # Set your best model path here directly
-BEST_MODEL_PATH = "learned_policies/Intersection-Lag-v0_2025-11-23_22-57-50/model_1000.pt" 
+BEST_MODEL_PATH = "learned_policies/Intersection-Lag-v0_2025-11-24_00-05-24/model_1000.pt" 
 DATA_PATH = "../../data/expert_agent_trajs.npy"
 NUM_EPISODES = 100
 # If True, it will pop up a window to show the animation every 20 episodes
@@ -183,7 +183,7 @@ def evaluate():
                 if env.state[0] >= 10.0:
                     success_count += 1
                 # Check Collision (Threshold 0.8m)
-                elif min_dist_this_ep < 0.8: 
+                elif min_dist_this_ep < 0.2: 
                     collision_count += 1
                 else:
                     timeout_count += 1
