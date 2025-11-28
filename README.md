@@ -43,7 +43,7 @@ $$
 
 **Cost Function (Safety)** 
 <!-- Safety is quantified using the Mahalanobis distance, which accounts for the probabilistic nature of the agent's position. We define the squared Mahalanobis distance $D^2$ between the ego position $u_t$ and the agent's distribution $\mathcal{N}(\mu_t, \Sigma_t)$ as:$$D^2(u_t, \mu_t) = (u_t - \mu_t)^\top \Sigma_t^{-1} (u_t - \mu_t)$$The safety cost $c_t$ is formulated as an exponential barrier function bounded between $[0, 100]$, ensuring a smooth gradient as the risk increases:$$c(s_t, a_t) = 100 \cdot \exp \left( -\frac{D^2(u_t, \mu_t)}{2} \right)$$ -->
-\(R_{ego}\) is the half-diagonal of the ego, and \(R_{agent}\) is the half-diagonal of the agent. In our setting, the Jackal robot’s half-diagonal is \(0.3328\,\text{m}\).
+\(R_{ego}\) is the half-diagonal of the ego, and \(R_{agent}\) is the half-diagonal of the agent. In our setting, the Jackal robot’s half-diagonal is $0.3328\,\text{m}$.
 $$d_{actual} = (x_{ego}-x_{agent})^2+(y_{ego} - y_{agent})^2$$
 $$d_{safety} = (R_{ego} + R_{agent}  )^2$$
 $$d_{conservative} = (R_{ego} + R_{agent} +\sqrt{\sigma_{x, agent}^2 + \sigma_{y,agent}^2})^2$$
