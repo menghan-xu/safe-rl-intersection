@@ -162,7 +162,7 @@ def make_animation(policy, env, device, filename="trajectory.gif"):
         print(f"Animation save failed: {e}")
     
     plt.close(fig)
-
+ 
 def compute_gae_returns(rewards, values, dones, gamma, gae_lambda):
     """
     Computes GAE for either Reward or Cost.
