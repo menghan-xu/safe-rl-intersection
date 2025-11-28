@@ -16,6 +16,8 @@ The ego is only going forward for now, so then $x_{ego}$ is fixed as $0.5$. (may
 
 **Reward Function** To encourage efficient navigation while maintaining passenger comfort and adhering to traffic rules, the reward function $r_t$ is composed of progress incentives, speed regulation, and control penalties.
 $$r(s_t, a_t) = r_{\text{progress}} + r_{\text{overspeed}} + r_{\text{comfort}} + r_{\text{terminal}} + r_{\text{collision}}$$
+
+
 Where:
 $$r_{\text{progress}} = \alpha \cdot v_{ego} \cdot \Delta t$$
 $$r_{\text{overspeed}} = -\beta \cdot \max(0, v_{ego} - v_{limit})^2$$
@@ -28,6 +30,8 @@ $$r_{terminal} =
     0, &\text{otherwise}
 \end{cases}
 $$
+
+
 In our setting, $y_{target}=1.5$
 
 $$r_{collison} =
@@ -43,7 +47,7 @@ $$
 $$d_{actual} = (x_{ego}-x_{agent})^2+(y_{ego} - y_{agent})^2$$
 $$d_{safety} = (R_{ego} + R_{agent}  )^2$$
 $$d_{conservative} = (R_{ego} + R_{agent} +\sqrt{\sigma_{x, agent}^2 + \sigma_{y,agent}^2})^2$$
-$$c(s_t) = \mu\max\{0, d_{conservative} - d_{actual}\} +c_{collision}$$
+$$c(s_t) = \mu\max(0, d_{conservative} - d_{actual}) +c_{collision}$$
 
 $$
 c_{\text{collision}} = 
@@ -54,7 +58,10 @@ c_{\text{collision}} =
 $$
 
 **Lagrangian Optimization Objective** We aim to maximize the expected return subject to a safety cost limit $d$. We define the per-step Lagrangian advantage $A^{Lag}$ by combining the reward advantage $A^R$ and the cost advantage $A^C$ via the Lagrange multiplier $\lambda$:
-$$A^{Lag}_t = A^R_t - \lambda A^C_t$$The policy $\pi_\theta$ is updated by maximizing the PPO surrogate objective using $A^{Lag}_t$. 
+
+$$A^{Lag}_t = A^R_t - \lambda A^C_t$$
+
+The policy $\pi_\theta$ is updated by maximizing the PPO surrogate objective using $A^{Lag}_t$. 
 
 $$l_{\pi}(\theta) = -\sum_{s,a}\min \{\frac{\pi_{\theta}(a|s)}{\pi_{\theta_t}(a|s)}A_t^{Lag},\text{clip}(\frac{\pi_{\theta}(a|s)}{\pi_{\theta_t}(a|s)}, 1-\epsilon, 1+\epsilon)A_t^{Lag} \}$$
 
