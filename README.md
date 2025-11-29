@@ -135,3 +135,12 @@ This folder contains:
   - `Collision Rate`  
 
 Feel free to message me if you have any questions!
+
+
+
+## Some new ideas(might work on it on Sunday)
+1. Physics-Informed Residual Architecture
+Introduce a hybrid control scheme where actions are decomposed into $a_t = a_{\text{LQR}}(s_t) + a_{\theta}(s_t)$. The RL agent only learns the residual adjustment ($a_{\theta}$) needed for collision avoidance, while the LQR controller handles vehicle kinematics and stability.
+
+2. Demonstration-Guided Exploration 
+   Accelerate training by incorporating an Auxiliary Behavior Cloning (BC) Loss. This leverages the limited expert data to guide the residual policy toward human-like evasive maneuvers in critical states, reducing sample inefficiency.
