@@ -46,12 +46,20 @@ class IntersectionGymAdapter(gym.Env):
 # 2. Utils
 # ==========================================
 def make_animation(policy, env, device, filename):
-    """Generates a GIF with Bounding Boxes and Dashboard."""
+    """
+    Generates a GIF with detailed Real-time Dashboard.
+    Displays: Reward components, Safety Cost, Velocities, and Distance.
+    """
     obs, _ = env.reset()
     obs_tensor = torch.from_numpy(obs).float().to(device).unsqueeze(0)
     
-    ego_pos_hist, agent_pos_hist = [], []
-    ego_v_hist, agent_v_hist = [], []
+    # History lists
+    ego_pos_hist = []
+    agent_pos_hist = []
+    ego_v_hist = []
+    agent_v_hist = []
+    
+    # Metric history (Store the info dict for each step)
     metric_hist = []
     
     done = False
@@ -66,17 +74,22 @@ def make_animation(policy, env, device, filename):
             action, _, _, _, _ = policy.action_value(obs_tensor)
         action_scalar = action.cpu().numpy().item()
         
+        # Step (Capture info!)
         next_obs, _, terminated, truncated, info = env.step(action_scalar)
+        
+        # Store metrics for this step
         metric_hist.append(info)
+        
         done = terminated or truncated
         obs_tensor = torch.from_numpy(next_obs).float().to(device).unsqueeze(0)
 
     # Setup Plot
-    fig, ax = plt.subplots(figsize=(6, 7))
-    ax.set_xlim(-2.5, 2.5); ax.set_ylim(-2.5, 8.5)
+    fig, ax = plt.subplots(figsize=(6, 7)) # Taller figure for text box
+    ax.set_xlim(-3.0, 3.0)
+    ax.set_ylim(-3.0, 8.5) # Expanded view to see goal
     ax.set_aspect('equal')
-    ax.grid(True, linestyle='--', alpha=0.5)
-    ax.set_title("Intersection Lag-PPO")
+    ax.grid(True, linestyle='--', alpha=0.4)
+    ax.set_title("Intersection Lag-PPO Analysis")
     
     # Lanes
     ax.plot([-5, 5], [0, 0], 'k--', alpha=0.3)
@@ -86,49 +99,84 @@ def make_animation(policy, env, device, filename):
     ego_dot, = ax.plot([], [], 'bo', label='Ego', markersize=8)
     agent_dot, = ax.plot([], [], 'ro', label='Agent', markersize=8)
     
-    ROBOT_W, ROBOT_L = 0.43, 0.508
-    ego_box = Rectangle((0,0), ROBOT_W, ROBOT_L, angle=0.0, color='blue', alpha=0.3)
-    agent_box = Rectangle((0,0), ROBOT_W, ROBOT_L, angle=0.0, color='red', alpha=0.3)
-    ax.add_patch(ego_box); ax.add_patch(agent_box)
+    ROBOT_W = 0.43
+    ROBOT_L = 0.508
+    ego_box = Rectangle((0,0), ROBOT_W, ROBOT_L, angle=0.0, color='blue', alpha=0.2)
+    agent_box = Rectangle((0,0), ROBOT_W, ROBOT_L, angle=0.0, color='red', alpha=0.2)
+    ax.add_patch(ego_box)
+    ax.add_patch(agent_box)
 
-    text_box = ax.text(-2.3, 8.0, "", fontsize=10, verticalalignment='top',
-                       bbox=dict(facecolor='white', alpha=0.9, edgecolor='gray'))
+    # Detailed Text Box (Positioned Top Left)
+    text_box = ax.text(
+        -2.8, 8.2, "", 
+        fontsize=9, 
+        verticalalignment='top', 
+        fontfamily='monospace',
+        bbox=dict(facecolor='white', alpha=0.95, edgecolor='gray', boxstyle='round')
+    )
+    
     ax.legend(loc='lower right')
     
     def update(frame):
         e_x, e_y = ego_pos_hist[frame]
         a_x, a_y = agent_pos_hist[frame]
         
+        # 1. Update Visuals
         ego_dot.set_data([e_x], [e_y])
         agent_dot.set_data([a_x], [a_y])
+        
         ego_box.set_xy((e_x - ROBOT_W/2, e_y - ROBOT_L/2))
         agent_box.set_xy((a_x - ROBOT_W/2, a_y - ROBOT_L/2))
         
-        dist = np.linalg.norm(np.array([e_x, e_y]) - np.array([a_x, a_y]))
-        
-        # Metrics
+        # 2. Get metrics
+        # Handle case where metric_hist might be 1 step shorter or longer depending on loop
         idx = min(frame, len(metric_hist)-1)
         m = metric_hist[idx]
         
-        info = (
-            f"Step: {frame}\nDist: {dist:.3f} m\n"
-            f"SoftCost: {m.get('cost', 0):.1f}\n"
-            f"TotalRew: {m.get('total_reward', 0):.1f}\n"
-            f"----------------\n"
-            f"Ego V : {ego_v_hist[frame]:.2f}\n"
-            f"Agent V: {agent_v_hist[frame]:.2f}"
-        )
-        text_box.set_text(info)
+        # Calculated Distance
+        dist_act = np.linalg.norm(np.array([e_x, e_y]) - np.array([a_x, a_y]))
         
+        # Retrieved Metrics from Env (using .get with defaults)
+        d_cons = m.get('d_cons', 0.0)
+        tot_rew = m.get('total_reward', 0.0)
+        cost = m.get('cost', 0.0) # Or final_cost
+        
+        r_prog = m.get('r_prog', 0.0)
+        r_spd = m.get('r_speed', 0.0)
+        r_cmf = m.get('r_comf', 0.0)
+        bonus = m.get('bonus', 0.0)
+
+        # 3. Format Dashboard
+        info_str = (
+            f"Step: {frame:03d}\n"
+            f"=== SAFETY ===\n"
+            f"d_actual : {dist_act:.3f} m\n"
+            f"d_consv  : {d_cons:.3f} m\n"
+            f"SafeCost : {cost:.2f}\n"
+            f"=== REWARD ({tot_rew:.2f}) ===\n"
+            f"Progress : {r_prog:+.2f}\n"
+            f"SpeedPen : {r_spd:+.2f}\n"
+            f"Comfort  : {r_cmf:+.2f}\n"
+            f"Bonus    : {bonus:+.0f}\n"
+            f"=== STATE ===\n"
+            f"Ego Vel  : {ego_v_hist[frame]:.2f}"
+        )
+        text_box.set_text(info_str)
+        
+        # Visual Alert: Red border if distance < collision
         bbox = text_box.get_bbox_patch()
         if bbox:
-            bbox.set_edgecolor('red' if dist < 0.67 else 'gray')
-            bbox.set_linewidth(2 if dist < 0.67 else 1)
+            if dist_act < 0.67: 
+                bbox.set_edgecolor('red')
+                bbox.set_linewidth(2)
+            else:
+                bbox.set_edgecolor('gray')
+                bbox.set_linewidth(1)
             
         return ego_dot, agent_dot, ego_box, agent_box, text_box
 
     anim = FuncAnimation(fig, update, frames=len(ego_pos_hist), interval=80, blit=True)
-    anim.save(filename, writer=PillowWriter(fps=15))
+    anim.save(filename, writer=PillowWriter(fps=12))
     plt.close(fig)
 
 def compute_gae(rewards, values, dones, gamma, lam):

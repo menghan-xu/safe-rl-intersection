@@ -126,4 +126,4 @@ max_grad_norm: 0.5
 # Whether to save the model during training.
 checkpoint: true
 # Frequency (in iterations) to save a GIF of the agent's behavior.
-save_gif_freq: 10
+save_gif_freq: 50
