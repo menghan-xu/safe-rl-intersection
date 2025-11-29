@@ -20,9 +20,12 @@ $$r(s_t, a_t) = r_{\text{progress}} + r_{\text{overspeed}} + r_{\text{comfort}} 
 
 Where:
 $$r_{\text{progress}} = \alpha \cdot v_{ego} \cdot \Delta t$$
+
+$\Delta t = 0.1s$
+
 $$r_{\text{overspeed}} = -\beta \cdot \max(0, v_{ego} - v_{limit})^2$$
 $$r_{\text{comfort}} = -\eta \cdot a_t^2$$
-Considering the constraints of the Jackal robot, we set $v_{\text{limit}} = 1.25\,\text{m/s}$.
+Considering the constraints of the Jackal robot, we set $v_{\text{limit}} = 1.5\,\text{m/s}$.
 
 $$r_{terminal} =
 \begin{cases}
@@ -43,7 +46,7 @@ $$
 
 **Cost Function (Safety)** 
 <!-- Safety is quantified using the Mahalanobis distance, which accounts for the probabilistic nature of the agent's position. We define the squared Mahalanobis distance $D^2$ between the ego position $u_t$ and the agent's distribution $\mathcal{N}(\mu_t, \Sigma_t)$ as:$$D^2(u_t, \mu_t) = (u_t - \mu_t)^\top \Sigma_t^{-1} (u_t - \mu_t)$$The safety cost $c_t$ is formulated as an exponential barrier function bounded between $[0, 100]$, ensuring a smooth gradient as the risk increases:$$c(s_t, a_t) = 100 \cdot \exp \left( -\frac{D^2(u_t, \mu_t)}{2} \right)$$ -->
-\(R_{ego}\) is the half-diagonal of the ego, and \(R_{agent}\) is the half-diagonal of the agent. In our setting, the Jackal robot’s half-diagonal is $0.3328\,\text{m}$.
+$R_{ego}$ is the half-diagonal of the ego, and \(R_{agent}\) is the half-diagonal of the agent. In our setting, the Jackal robot’s half-diagonal is $0.3328\,\text{m}$.
 $$d_{actual} = (x_{ego}-x_{agent})^2+(y_{ego} - y_{agent})^2$$
 $$d_{safety} = (R_{ego} + R_{agent}  )^2$$
 $$d_{conservative} = (R_{ego} + R_{agent} +\sqrt{\sigma_{x, agent}^2 + \sigma_{y,agent}^2})^2$$
@@ -68,3 +71,67 @@ $$l_{\pi}(\theta) = -\sum_{s,a}\min \{\frac{\pi_{\theta}(a|s)}{\pi_{\theta_t}(a|
 Simultaneously, the Lagrange multiplier $\lambda$ is updated via dual gradient ascent to satisfy the safety constraint:
 $$\lambda_{k+1} = \max \left( 0, \lambda_k + \eta_{\lambda} (J_C(\pi_\theta) - d) \right)$$
 where $J_C(\pi_\theta)$ is the expected safety cost of the current policy, and $d$ is the safety budget. This mechanism adaptively increases the penalty weight when the agent violates the safety threshold and decreases it when the behavior is safe.
+
+
+### Hyperparameters Tuning
+dt : 0.1
+max_accel = 3.2
+Alpha (w_progress) : 17.11
+Eta (w_comfort)    : 0.697
+Beta (w_overspeed) : 72.7
+Mu (cost_scale)    : 463.2
+
+### To my teammates 🤣
+To Doris, I set dt = 0.1 because I checked all the agent CSV files, and some of them have a minimum dt of around 0.02. So if we set dt = 0.01, we wouldn't be able to use the original timestamps directly. Since Mark said anything between 0.1 and 0.01 is fine, I went with 0.1. :)
+
+
+
+**Install packages**
+I personaly prefer conda environment. My python version is 3.11.11
+```bash
+pip install -r requirements.txt
+```
+If you are on Windows/Linux with an NVIDIA GPU, you might need to reinstall PyTorch with CUDA support (the requirements file installs the CPU version)
+
+If the environment is set up correctly, running `train.py` should show “Running on cuda.”  
+If you're on a Mac, you'll see “Running on mps,” and if you're on a CPU-only setup, it will show “Running on cpu.”
+
+
+**Put the `.npy` file in the correct folder**
+
+Create a folder called `data` at the same level as your `code` folder, and place the `expert_agent_trajs.npy` file inside it. I've uploaded this data file to our shared google drive.
+
+Your directory structure should look like this:
+```
+project_root/
+├── code/
+│   ├── lagrange_ppo/
+│   └── ppo/
+└── data/
+    └── expert_agent_trajs.npy
+```
+
+**Tune hyperparameters in `lagrange_ppo/hyperparameters.yaml`**
+I have already written explanations for every hyperparameter, and some guidelines on how to tune them. After you change hyperparameters in this file, run 
+```
+python train.py
+```
+to start training, and then testing.
+
+For Mac, training is expected to take around 30 minutes. For CUDA, I don’t know the exact time, but it should be faster depending on your GPU.
+
+During training, a folder will be created at  
+`code/lagrange_ppo/learned_policies/Intersection-Lag-v0_{your_time}`
+
+This folder contains:
+- `config.yaml`: your hyperparameter settings  
+- reward and loss curves  
+- model checkpoints  
+- `iter_{number}.gif`: animation during training  
+- `test_ep_{number}.gif`: animation during testing  
+- `report.txt`: summary of the final testing results  
+  - `Avg Reward`     
+  - `Success Rate`    
+  - `Collision Rate`  
+
+Feel free to message me if you have any questions!

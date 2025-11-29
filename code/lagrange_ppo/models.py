@@ -10,7 +10,7 @@ def layer_init(layer, std=0.5, bias_const=0.0):
     return layer
 
 class ContinuousActorCritic(nn.Module):
-    def __init__(self, state_dim, action_dim, max_action=1.0):
+    def __init__(self, state_dim, action_dim, max_action=3.2):
         super().__init__()
         self.max_action = max_action
         
@@ -29,8 +29,7 @@ class ContinuousActorCritic(nn.Module):
         # --- Critic 1: Task Reward Value (V_R) ---
         self.reward_value_head = layer_init(nn.Linear(64, 1), std=1.0)
 
-        # --- Critic 2: Safety Cost Value (V_C) [NEW] ---
-        # estimates expected future safety costs
+        # --- Critic 2: Safety Cost Value (V_C) ---
         self.cost_value_head = layer_init(nn.Linear(64, 1), std=1.0)
 
     def action_value(self, state, action=None):
@@ -48,12 +47,13 @@ class ContinuousActorCritic(nn.Module):
         if action is None:
             action = dist.sample()
 
+        # Sum log probs if action_dim > 1 (here it is 1, so sum changes nothing but is safe)
         log_prob = dist.log_prob(action).sum(-1)
         entropy = dist.entropy().sum(-1)
         
         # Critics
         val_r = self.reward_value_head(x).squeeze(-1)
-        val_c = self.cost_value_head(x).squeeze(-1) # Return Cost Value
+        val_c = self.cost_value_head(x).squeeze(-1)
 
         return action, log_prob, entropy, val_r, val_c
 

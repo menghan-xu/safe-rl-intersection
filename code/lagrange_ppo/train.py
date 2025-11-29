@@ -1,30 +1,36 @@
 import os
-os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
-from argparse import ArgumentParser
-import random
-import gymnasium as gym
+import yaml 
+import datetime
+import pathlib
+import argparse
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from tqdm import tqdm
-import pathlib
 import matplotlib.pyplot as plt
+import gymnasium as gym
+from tqdm import tqdm
 from matplotlib.animation import FuncAnimation, PillowWriter
-import datetime # Added for timestamp
+from matplotlib.patches import Rectangle
 
 # Imports
-from env import IntersectionEnv  
-from models import ContinuousActorCritic       
+from env import IntersectionEnv
+from models import ContinuousActorCritic
 
 # ==========================================
 # 1. Gym Adapter
 # ==========================================
 class IntersectionGymAdapter(gym.Env):
-    def __init__(self, agent_data_list):
-        self.env = IntersectionEnv(target_pos=[1.25, 0.0], agent_data_list=agent_data_list, dt=0.1) 
+    def __init__(self, agent_data_list, config):
+        self.env = IntersectionEnv(
+            target_pos=config['target_pos'], 
+            agent_data_list=agent_data_list, 
+            config=config, 
+            dt=config['dt']
+        ) 
         self.observation_space = gym.spaces.Box(low=-np.inf, high=np.inf, shape=(8,), dtype=np.float32)
-        self.action_space = gym.spaces.Box(low=-1.0, high=1.0, shape=(1,), dtype=np.float32)
+        limit = config['max_accel']
+        self.action_space = gym.spaces.Box(low=-limit, high=limit, shape=(1,), dtype=np.float32)
 
     def reset(self, seed=None, options=None):
         obs = self.env.reset()
@@ -33,422 +39,407 @@ class IntersectionGymAdapter(gym.Env):
     def step(self, action):
         if isinstance(action, np.ndarray):
             action = action.item()
-        # returns: obs, reward, done, info{'cost': ...}
         obs, reward, done, info = self.env.step(action)
         return obs.numpy(), reward, done, False, info
 
 # ==========================================
-# 2. Lag-PPO Utils
+# 2. Utils
 # ==========================================
-
-def make_animation(policy, env, device, filename="trajectory.gif"):
-    """
-    Runs one episode and saves a GIF animation with Velocity/Accel dashboard.
-    """
-    print(f"Generating animation: {filename}...")
-    
-    # 1. Collect Data
+def make_animation(policy, env, device, filename):
+    """Generates a GIF with Bounding Boxes and Dashboard."""
     obs, _ = env.reset()
     obs_tensor = torch.from_numpy(obs).float().to(device).unsqueeze(0)
     
-    # History containers
-    ego_pos_hist = []
-    agent_pos_hist = []
-    
-    ego_v_hist = []
-    ego_a_hist = [] # Action is acceleration
-    agent_v_hist = []
+    ego_pos_hist, agent_pos_hist = [], []
+    ego_v_hist, agent_v_hist = [], []
+    metric_hist = []
     
     done = False
     while not done:
-        # Get Action
+        render_info = env.env.render()
+        ego_pos_hist.append(render_info['ego_pos'])
+        agent_pos_hist.append(render_info['agent_pos'])
+        ego_v_hist.append(render_info['ego_v'])
+        agent_v_hist.append(render_info['agent_v'])
+        
         with torch.no_grad():
             action, _, _, _, _ = policy.action_value(obs_tensor)
         action_scalar = action.cpu().numpy().item()
         
-        # Step Environment
-        next_obs, _, terminated, truncated, _ = env.step(action_scalar)
-        
-        # Get Render Info (After step to get updated state)
-        render_info = env.env.render() 
-        
-        # Record Data
-        ego_pos_hist.append(render_info['ego_pos'])
-        agent_pos_hist.append(render_info['agent_pos'])
-        
-        ego_v_hist.append(render_info['ego_v'])
-        ego_a_hist.append(action_scalar) # Current action is accel
-        agent_v_hist.append(render_info['agent_v'])
-        
+        next_obs, _, terminated, truncated, info = env.step(action_scalar)
+        metric_hist.append(info)
         done = terminated or truncated
         obs_tensor = torch.from_numpy(next_obs).float().to(device).unsqueeze(0)
 
-    # 2. Setup Plot
-    fig, ax = plt.subplots(figsize=(6, 6)) 
-    
-    # --- [UPDATED] Plot Limits ---
-    # Zoom in to the 3x3m intersection area
-    ax.set_xlim(-2, 2) 
-    ax.set_ylim(-2, 2) 
-    
+    # Setup Plot
+    fig, ax = plt.subplots(figsize=(6, 7))
+    ax.set_xlim(-2.5, 2.5); ax.set_ylim(-2.5, 8.5)
     ax.set_aspect('equal')
-    ax.grid(True, linestyle='--', alpha=0.6)
-    ax.set_title(f"Intersection Lag-PPO\n(Episode Length: {len(ego_pos_hist)} steps)")
-
-    # Draw Lanes (Static)
-    # Drawn slightly larger than view to ensure they cover the edges
-    ax.plot([-3, 3], [0, 0], 'k--', alpha=0.3, lw=1) # Horizontal lane center
-    ax.plot([0.5, 0.5], [-3, 3], 'k--', alpha=0.3, lw=1) # Vertical lane center (Ego path)
-
-    # Initialize Objects
-    ego_dot, = ax.plot([], [], 'bo', label='Ego', markersize=12, zorder=5)
-    agent_dot, = ax.plot([], [], 'ro', label='Agent', markersize=12, zorder=5)
-    ego_line, = ax.plot([], [], 'b-', alpha=0.3, lw=2)
-    agent_line, = ax.plot([], [], 'r-', alpha=0.3, lw=2)
+    ax.grid(True, linestyle='--', alpha=0.5)
+    ax.set_title("Intersection Lag-PPO")
     
-    # Dashboard Text (Positioned relative to the new limits)
-    # Top-left corner of the view is roughly (-1.8, 1.8)
-    status_text = ax.text(
-        -1.9, 1.9, "", 
-        fontsize=9, 
-        verticalalignment='top',
-        bbox=dict(boxstyle="round,pad=0.3", fc="white", ec="gray", alpha=0.9)
-    )
+    # Lanes
+    ax.plot([-5, 5], [0, 0], 'k--', alpha=0.3)
+    ax.plot([0.5, 0.5], [-5, 15], 'k--', alpha=0.3)
+
+    # Objects
+    ego_dot, = ax.plot([], [], 'bo', label='Ego', markersize=8)
+    agent_dot, = ax.plot([], [], 'ro', label='Agent', markersize=8)
     
+    ROBOT_W, ROBOT_L = 0.43, 0.508
+    ego_box = Rectangle((0,0), ROBOT_W, ROBOT_L, angle=0.0, color='blue', alpha=0.3)
+    agent_box = Rectangle((0,0), ROBOT_W, ROBOT_L, angle=0.0, color='red', alpha=0.3)
+    ax.add_patch(ego_box); ax.add_patch(agent_box)
+
+    text_box = ax.text(-2.3, 8.0, "", fontsize=10, verticalalignment='top',
+                       bbox=dict(facecolor='white', alpha=0.9, edgecolor='gray'))
     ax.legend(loc='lower right')
-
+    
     def update(frame):
-        # 1. Update Positions
-        e_pos = ego_pos_hist[frame]
-        a_pos = agent_pos_hist[frame]
+        e_x, e_y = ego_pos_hist[frame]
+        a_x, a_y = agent_pos_hist[frame]
         
-        ego_dot.set_data([e_pos[0]], [e_pos[1]])
-        agent_dot.set_data([a_pos[0]], [a_pos[1]])
+        ego_dot.set_data([e_x], [e_y])
+        agent_dot.set_data([a_x], [a_y])
+        ego_box.set_xy((e_x - ROBOT_W/2, e_y - ROBOT_L/2))
+        agent_box.set_xy((a_x - ROBOT_W/2, a_y - ROBOT_L/2))
         
-        # 2. Update Trails
-        e_path = np.array(ego_pos_hist[:frame+1])
-        a_path = np.array(agent_pos_hist[:frame+1])
-        ego_line.set_data(e_path[:, 0], e_path[:, 1])
-        agent_line.set_data(a_path[:, 0], a_path[:, 1])
+        dist = np.linalg.norm(np.array([e_x, e_y]) - np.array([a_x, a_y]))
         
-        # 3. Update Dashboard Text
-        e_v = ego_v_hist[frame]
-        e_a = ego_a_hist[frame]
-        a_v = agent_v_hist[frame]
+        # Metrics
+        idx = min(frame, len(metric_hist)-1)
+        m = metric_hist[idx]
         
-        info_str = (
-            f"Step: {frame}\n"
+        info = (
+            f"Step: {frame}\nDist: {dist:.3f} m\n"
+            f"SoftCost: {m.get('cost', 0):.1f}\n"
+            f"TotalRew: {m.get('total_reward', 0):.1f}\n"
             f"----------------\n"
-            f"EGO (Blue)\n"
-            f"Vel : {e_v:.2f} m/s\n"
-            f"Acc : {e_a:.2f} m/s²\n"
-            f"----------------\n"
-            f"AGENT (Red)\n"
-            f"Vel : {a_v:.2f} m/s"
+            f"Ego V : {ego_v_hist[frame]:.2f}\n"
+            f"Agent V: {agent_v_hist[frame]:.2f}"
         )
-        status_text.set_text(info_str)
+        text_box.set_text(info)
         
-        return ego_dot, agent_dot, ego_line, agent_line, status_text
+        bbox = text_box.get_bbox_patch()
+        if bbox:
+            bbox.set_edgecolor('red' if dist < 0.67 else 'gray')
+            bbox.set_linewidth(2 if dist < 0.67 else 1)
+            
+        return ego_dot, agent_dot, ego_box, agent_box, text_box
 
-    # Create Animation
-    anim = FuncAnimation(fig, update, frames=len(ego_pos_hist), interval=100, blit=True)
-    
-    # Save
-    try:
-        writer = PillowWriter(fps=10) # Slower FPS to read text easily
-        anim.save(filename, writer=writer)
-        print(f"Animation saved: {filename}")
-    except Exception as e:
-        print(f"Animation save failed: {e}")
-    
+    anim = FuncAnimation(fig, update, frames=len(ego_pos_hist), interval=80, blit=True)
+    anim.save(filename, writer=PillowWriter(fps=15))
     plt.close(fig)
- 
-def compute_gae_returns(rewards, values, dones, gamma, gae_lambda):
-    """
-    Computes GAE for either Reward or Cost.
-    """
-    T, N = rewards.shape
-    advantages = torch.zeros_like(rewards)
-    gae = torch.zeros(N, device=rewards.device)
 
+def compute_gae(rewards, values, dones, gamma, lam):
+    T, N = rewards.shape
+    adv = torch.zeros_like(rewards)
+    gae = 0
     for t in reversed(range(T)):
         mask = 1.0 - dones[t]
         delta = rewards[t] + gamma * values[t+1] * mask - values[t]
-        gae = delta + gamma * gae_lambda * mask * gae
-        advantages[t] = gae
+        gae = delta + gamma * lam * mask * gae
+        adv[t] = gae
+    return adv, adv + values[:-1]
 
-    returns = advantages + values[:-1]
-    return advantages, returns
+# Return dict of losses for logging
+def lagrangian_loss(agent, states, actions, adv, logp, ret_r, ret_c, clip, ent_c, vf_c):
+    _, new_logp, entropy, val_r, val_c = agent.action_value(states, actions)
+    ratio = torch.exp(new_logp - logp)
+    surr1 = ratio * adv
+    surr2 = torch.clamp(ratio, 1-clip, 1+clip) * adv
     
-
-def lagrangian_ppo_loss(agent, states, actions, adv_total, logprobs, ret_r, ret_c, clip_ratio=0.2, ent_coef=0.01, vf_coef=0.5):
-    """
-    Loss function for Lag-PPO.
-    Optimizes Policy using Combined Advantage (Reward - lambda * Cost).
-    Optimizes TWO Critics (Reward Value and Cost Value).
-    """
-    _, new_logprob, entropy, val_r, val_c = agent.action_value(states, actions)
-
-    # 1. Policy Loss (using Combined Advantage)
-    ratio = torch.exp(new_logprob - logprobs)
-    arg1 = ratio * adv_total
-    arg2 = torch.clamp(ratio, 1 - clip_ratio, 1 + clip_ratio) * adv_total
-    L_Policy = -(torch.min(arg1, arg2)).mean()
+    loss_pi = -torch.min(surr1, surr2).mean()
+    loss_vr = (val_r - ret_r).pow(2).mean()
+    loss_vc = (val_c - ret_c).pow(2).mean() # Safety Critic Loss
+    loss_ent = -ent_c * entropy.mean()
     
-    # 2. Value Loss 1: Task Reward (MSE)
-    L_VR = (val_r - ret_r).pow(2).mean()
-
-    # [cite_start]3. Value Loss 2: Safety Cost (MSE) [cite: 59]
-    L_VC = (val_c - ret_c).pow(2).mean()
+    total_loss = loss_pi + vf_c * (loss_vr + loss_vc) + loss_ent
     
-    # 4. Entropy Loss
-    L_Entropy = -torch.mean(entropy)
+    return total_loss, {
+        "loss_pi": loss_pi.item(),
+        "loss_vr": loss_vr.item(),
+        "loss_vc": loss_vc.item(),
+        "loss_ent": loss_ent.item(),
+        "loss_total": total_loss.item()
+    }
 
-    # Total Loss
-    loss = L_Policy + vf_coef * (L_VR + L_VC) + ent_coef * L_Entropy
-    return loss
-
-# ==========================================
-# 3. Main Loop
-# ==========================================
-
-def train(args, expert_data, log_dir): # <--- ADDED log_dir argument
-    random.seed(args.seed)
-    np.random.seed(args.seed)
-    torch.manual_seed(args.seed)
-
-    # Device Setup
-    if torch.backends.mps.is_available():
-        device = torch.device("mps")
-    elif torch.cuda.is_available():
-        device = torch.device("cuda")
-    else:
-        device = torch.device("cpu")
-    print(f"Training on {device}")
-
-    # Env Setup
-    def make_env_fn():
-        return IntersectionGymAdapter(agent_data_list=expert_data)
-    env = gym.vector.SyncVectorEnv([make_env_fn for _ in range(args.num_envs)])
-    eval_env = IntersectionGymAdapter(agent_data_list=expert_data)
-    
-    # Model
-    policy = ContinuousActorCritic(state_dim=8, action_dim=1, max_action=5.0).to(device)
-    optimizer = optim.Adam(policy.parameters(), lr=args.lr)
-    
-    # --- Lagrange Multiplier Setup ---
-    # Lambda is initialized and updated manually via Dual Gradient Ascent 
-    lagrange_lambda = torch.tensor(args.lambda_init, device=device)
-    
-    # Buffers
-    states = torch.zeros((args.num_steps, args.num_envs, 8)).to(device)
-    actions = torch.zeros((args.num_steps, args.num_envs, 1)).to(device)
-    logprobs = torch.zeros((args.num_steps, args.num_envs)).to(device)
-    dones = torch.zeros((args.num_steps, args.num_envs)).to(device)
-    
-    # Two separate buffers for Reward and Cost
-    rewards = torch.zeros((args.num_steps, args.num_envs)).to(device)
-    costs = torch.zeros((args.num_steps, args.num_envs)).to(device)
-    
-    values_r = torch.zeros((args.num_steps + 1, args.num_envs)).to(device)
-    values_c = torch.zeros((args.num_steps + 1, args.num_envs)).to(device)
-
-    obs, _ = env.reset(seed=args.seed)
-    obs = torch.from_numpy(obs).float().to(device)
-
-    # Path creation moved to main block (no longer here)
-    eval_rewards = []
-    
-    print("Start Training...")
-    for iteration in tqdm(range(1, args.epochs + 1)):
-        
-        # --- 1. Rollout ---
-        for t in range(args.num_steps):
-            states[t] = obs
-            with torch.no_grad():
-                # Get both Value estimates
-                action, logprob, _, val_r, val_c = policy.action_value(obs)
-            
-            actions[t] = action
-            logprobs[t] = logprob
-            values_r[t] = val_r
-            values_c[t] = val_c
-
-            next_obs, reward, terminated, truncated, infos = env.step(action.cpu().numpy())
-            
-            # Store Reward and Cost separately
-            rewards[t] = torch.from_numpy(reward).float().to(device)
-            
-            # Extract cost from info
-            # SyncVectorEnv returns infos as a structure that can be indexed directly if using gymnasium > 0.29
-            # Fallback logic for safety:
-            if isinstance(infos, dict):
-                if 'cost' in infos:
-                    cost_batch = infos['cost']
-                else:
-                    cost_batch = np.zeros(args.num_envs)
-            else:
-                cost_batch = np.array([i.get('cost', 0.0) for i in infos])
-                
-            costs[t] = torch.from_numpy(cost_batch).float().to(device)
-
-            done = np.logical_or(terminated, truncated)
-            dones[t] = torch.tensor(done, device=device, dtype=torch.float32)
-            obs = torch.from_numpy(next_obs).float().to(device)
-
-        # --- 2. GAE Calculation ---
-        with torch.no_grad():
-            next_val_r, next_val_c = policy.value(obs)
-            values_r[args.num_steps] = next_val_r
-            values_c[args.num_steps] = next_val_c
-
-        # Compute Advantages for Reward (A_R)
-        adv_r, ret_r = compute_gae_returns(rewards, values_r, dones, args.gamma, args.gae_lambda)
-        
-        # Compute Advantages for Cost (A_C)
-        adv_c, ret_c = compute_gae_returns(costs, values_c, dones, args.gamma, args.gae_lambda)
-
-        # --- 3. Lagrangian Advantage Combination  ---
-        # A_Lag = A_R - lambda * A_C
-        adv_total = adv_r - lagrange_lambda * adv_c
-        
-        # Normalize combined advantage
-        adv_flat = adv_total.reshape(-1)
-        adv_flat = (adv_flat - adv_flat.mean()) / (adv_flat.std() + 1e-8)
-            
-        # Flatten buffers for PPO
-        bsz = args.num_steps * args.num_envs
-        states_f = states.reshape(bsz, -1)
-        actions_f = actions.reshape(bsz, -1)
-        logp_f = logprobs.reshape(bsz)
-        ret_r_f = ret_r.reshape(bsz)
-        ret_c_f = ret_c.reshape(bsz) # Cost Returns needed for V_C training
-
-        # --- 4. PPO Update ---
-        for _ in range(args.update_epochs):
-            perm = torch.randperm(bsz, device=device)
-            for start in range(0, bsz, args.minibatch_size):
-                idx = perm[start : start + args.minibatch_size]
-
-                loss = lagrangian_ppo_loss(
-                    policy, 
-                    states_f[idx], actions_f[idx], 
-                    adv_flat[idx], logp_f[idx], 
-                    ret_r_f[idx], ret_c_f[idx], # Pass both returns
-                    args.clip_ratio, args.ent_coef, args.vf_coef
-                )
-                
-                optimizer.zero_grad()
-                loss.backward()
-                nn.utils.clip_grad_norm_(policy.parameters(), args.max_grad_norm)
-                optimizer.step()
-        
-        # --- 5. Update Lambda (Dual Ascent)  ---
-        # lambda <- max(0, lambda + alpha * (J_c - d))
-        # We use the mean cost of the current batch as an approximation of J_c
-        mean_cost = costs.mean().item()
-        # Estimate episode cost roughly as step_cost / (1-gamma) or just sum if gamma=1
-        # Here we use a simple metric: Average Step Cost vs Limit
-        # If args.cost_limit is defined as "limit per episode", we should sum.
-        # Assuming args.cost_limit is "Average Cost per Step Limit" for stability:
-        # If your limit is 20.0 for an episode of 200 steps, step limit = 0.1
-        
-        # Let's assume cost_limit is the total budget per episode (e.g. 20)
-        # We scale the batch mean cost to an episode scale approx
-        est_episode_cost = costs.sum(dim=0).mean() # Sum over T, Mean over N
-        
-        lambda_loss = args.lambda_lr * (est_episode_cost - args.cost_limit)
-        lagrange_lambda += lambda_loss
-        lagrange_lambda = torch.clamp(lagrange_lambda, min=0.0)
-
-        if iteration % 10 == 0:
-            avg_rew = val(policy, eval_env, device)
-            print(f"Iter {iteration} | Reward: {avg_rew:.2f} | Lambda: {lagrange_lambda.item():.4f} | Cost: {est_episode_cost:.2f}")
-            eval_rewards.append(avg_rew)
-            
-            # Plot using log_dir
-            plt.figure()
-            iters = list(range(10, len(eval_rewards)*10 + 1, 10))
-            plt.plot(iters, eval_rewards)
-            plt.savefig(f'{log_dir}/eval_reward_curve.png')
-            plt.close()
-            
-        # Save Animation using log_dir
-        if iteration % 50 == 0:
-                gif_path = f"{log_dir}/iter_{iteration}.gif"
-                # Note: pass eval_env, not the vector env
-                make_animation(policy, eval_env, device, filename=gif_path)
-                
-        # Save Checkpoint using log_dir
-        if args.checkpoint and iteration % 50 == 0:
-            torch.save(policy.state_dict(), f"{log_dir}/model_{iteration}.pt")
-    
-    # Save Final Model using log_dir
-    torch.save(policy.state_dict(), f"{log_dir}/final_model.pt")
-    print("Training Finished!")
-    return policy
-
-
-def val(model, env, device, num_ep=5):
-    rew_sum = 0
+# Evaluate with Value Loss calculation and GIF saving support
+def evaluate(model, env, device, num_ep=100, save_gifs=False, save_dir=None):
     model.eval()
-    for i in range(num_ep):
+    success = 0
+    collision = 0
+    total_r = []
+    total_value_loss = [] # Track critic accuracy
+    
+    for ep_i in range(num_ep):
         obs, _ = env.reset()
         obs = torch.from_numpy(obs).float().to(device).unsqueeze(0)
         done = False
+        ep_r = 0
+        min_dist = float('inf')
+        
+        # For Value Loss Calculation
+        ep_values = []
+        ep_rewards = []
+        
+        # GIF saving logic for Test Phase
+        if save_gifs and save_dir and ep_i < 5: # Save first 5 episodes as sample
+             gif_path = f"{save_dir}/test_ep_{ep_i}.gif"
+             # We use make_animation which runs its own episode, so we call it separately
+             # Note: This is slightly inefficient (runs extra episodes) but cleaner code-wise
+             make_animation(model, env, device, gif_path)
+
         while not done:
             with torch.no_grad():
-                # Note: Returns 5 values now
-                action, _, _, _, _ = model.action_value(obs)
-            action_scalar = action.cpu().numpy().item()
-            next_obs, reward, terminated, truncated, _ = env.step(action_scalar)
-            rew_sum += reward
-            done = terminated or truncated
+                x = model.trunk(obs)
+                action = torch.tanh(model.mu_head(x)) * model.max_action
+                
+                # Get Value estimate for loss calc
+                val_r = model.reward_value_head(x)
+                ep_values.append(val_r.item())
+                
+                action_scalar = action.cpu().numpy().item()
+            
+            next_obs, r, term, trunc, _ = env.step(action_scalar)
+            ep_r += r
+            ep_rewards.append(r)
+            
+            render_info = env.env.render()
+            e_pos = np.array(render_info['ego_pos'])
+            a_pos = np.array(render_info['agent_pos'])
+            dist = np.linalg.norm(e_pos - a_pos)
+            if dist < min_dist: min_dist = dist
+            
+            done = term or trunc
             obs = torch.from_numpy(next_obs).float().to(device).unsqueeze(0)
+            
+            if done:
+                if env.env.state[0] >= env.env.target_pos[0]: 
+                    success += 1
+                if min_dist < env.env.collision_dist: 
+                    collision += 1
+
+        # Compute Critic Loss (MSE between predicted Value and actual discounted Return)
+        # Simple Monte Carlo return calculation
+        returns = []
+        G = 0
+        for r in reversed(ep_rewards):
+            G = r + 0.99 * G # assuming gamma=0.99 for eval
+            returns.insert(0, G)
+        
+        # Calculate MSE
+        v_loss = np.mean([(v - ret)**2 for v, ret in zip(ep_values, returns)])
+        total_value_loss.append(v_loss)
+        total_r.append(ep_r)
+        
     model.train()
-    return rew_sum / num_ep
+    return np.mean(total_r), success/num_ep, collision/num_ep, np.mean(total_value_loss)
 
-if __name__ == '__main__':
-    parser = ArgumentParser()
-    parser.add_argument("--env_id", type=str, default="Intersection-Lag-v0")
-    parser.add_argument("--epochs", type=int, default=1000)
-    parser.add_argument("--num_envs", type=int, default=4)
-    parser.add_argument("--gamma", type=float, default=0.99)
-    parser.add_argument("--gae_lambda", type=float, default=0.95)
-    parser.add_argument("--lr", type=float, default=3e-4)
-    parser.add_argument("--num_steps", type=int, default=200)
-    parser.add_argument("--minibatch_size", type=int, default=64)
-    parser.add_argument("--update_epochs", type=int, default=10)
-    parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--checkpoint", action="store_true", default=True)
-    parser.add_argument("--max_grad_norm", type=float, default=0.5)
-    
-    # Lag-PPO specific args
-    parser.add_argument("--cost_limit", type=float, default=20.0, help="Safety budget d")
-    parser.add_argument("--lambda_lr", type=float, default=0.05, help="Learning rate for lambda")
-    parser.add_argument("--lambda_init", type=float, default=1.0, help="Initial lambda")
-    parser.add_argument("--clip_ratio", type=float, default=0.2)
-    parser.add_argument("--ent_coef", type=float, default=0.01)
-    parser.add_argument("--vf_coef", type=float, default=0.5)
+# ==========================================
+# 3. Main Runner
+# ==========================================
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--config", type=str, default="hyperparameters.yaml", help="Path to config file")
+    args = parser.parse_args()
 
-    args = parser.parse_args()  
+    # 1. Load Config
+    with open(args.config, 'r') as f:
+        cfg = yaml.safe_load(f)
     
-    # --- Create Timestamped Directory ---
+    # 2. Setup Directory
     timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    run_name = f"{args.env_id}_{timestamp}"
-    log_dir = f"learned_policies/{run_name}/"
+    run_dir = f"learned_policies/{cfg['env_id']}_{timestamp}"
+    pathlib.Path(run_dir).mkdir(parents=True, exist_ok=True)
     
-    # Create the directory
-    pathlib.Path(log_dir).mkdir(parents=True, exist_ok=True)
-    print(f" Saving results to: {log_dir}")
-    
+    with open(f"{run_dir}/config.yaml", 'w') as f:
+        yaml.dump(cfg, f)
+
+    # 3. Load Data
     data_path = "../../data/expert_agent_trajs.npy"
     if not os.path.exists(data_path):
-        print(f"Error: {data_path} not found! Please run process_data.py first.")
-        exit()
-        
+        data_path = "data/expert_agent_trajs.npy"
+    
     print(f"Loading expert data from {data_path}...")
     expert_data = np.load(data_path, allow_pickle=True)
+
+    # 4. Setup Training
+    if torch.backends.mps.is_available(): device = torch.device("mps")
+    elif torch.cuda.is_available(): device = torch.device("cuda")
+    else: device = torch.device("cpu")
+    print(f" Running on {device}. Saving to {run_dir}")
+
+    # Envs
+    def make_env(): return IntersectionGymAdapter(expert_data, cfg)
+    env = gym.vector.SyncVectorEnv([make_env for _ in range(cfg['num_envs'])])
+    eval_env = IntersectionGymAdapter(expert_data, cfg)
+
+    # Model
+    model = ContinuousActorCritic(8, 1, cfg['max_accel']).to(device)
+    opt = optim.Adam(model.parameters(), lr=cfg['lr'])
+    lambda_param = torch.tensor(cfg['lambda_init'], device=device)
+
+    # Buffers
+    steps = cfg['num_steps']
+    envs = cfg['num_envs']
+    obs = torch.zeros((steps, envs, 8)).to(device)
+    acts = torch.zeros((steps, envs, 1)).to(device)
+    logp = torch.zeros((steps, envs)).to(device)
+    rews = torch.zeros((steps, envs)).to(device)
+    costs = torch.zeros((steps, envs)).to(device)
+    dones = torch.zeros((steps, envs)).to(device)
+    val_r = torch.zeros((steps+1, envs)).to(device)
+    val_c = torch.zeros((steps+1, envs)).to(device)
+
+    next_o, _ = env.reset(seed=cfg['seed'])
+    next_o = torch.from_numpy(next_o).float().to(device)
     
-    # Pass log_dir to train function
-    train(args, expert_data, log_dir)
+    # --- Logging Lists ---
+    eval_rewards_history = []
+    train_loss_history = [] # Total loss
+    train_v_loss_history = [] # Value loss
+    
+    # --- Loop ---
+    for itr in tqdm(range(1, cfg['epochs'] + 1)):
+        # 1. Rollout
+        for t in range(steps):
+            obs[t] = next_o
+            with torch.no_grad():
+                a, lp, _, vr, vc = model.action_value(next_o)
+            
+            acts[t] = a; logp[t] = lp
+            val_r[t] = vr; val_c[t] = vc
+            
+            next_o, r, term, trunc, info = env.step(a.cpu().numpy())
+            rews[t] = torch.from_numpy(r).float().to(device)
+            
+            if isinstance(info, dict):
+                c_batch = info.get('cost', np.zeros(envs))
+            else:
+                c_batch = np.array([i.get('cost', 0.0) for i in info])
+            
+            costs[t] = torch.from_numpy(c_batch).float().to(device)
+            
+            done = np.logical_or(term, trunc)
+            dones[t] = torch.tensor(done, device=device, dtype=torch.float32)
+            next_o = torch.from_numpy(next_o).float().to(device)
+
+        # 2. GAE
+        with torch.no_grad():
+            _, _, _, n_vr, n_vc = model.action_value(next_o)
+            val_r[steps] = n_vr.squeeze(-1)
+            val_c[steps] = n_vc.squeeze(-1)
+            
+        adv_r, ret_r = compute_gae(rews, val_r, dones, cfg['gamma'], cfg['gae_lambda'])
+        adv_c, ret_c = compute_gae(costs, val_c, dones, cfg['gamma'], cfg['gae_lambda'])
+        
+        # Combine
+        adv_total = adv_r - lambda_param * adv_c
+        adv_total = (adv_total - adv_total.mean()) / (adv_total.std() + 1e-8)
+        
+        # 3. Update
+        bsz = steps * envs
+        states_f = obs.reshape(bsz, -1)
+        actions_f = acts.reshape(bsz, -1)
+        logp_f = logp.reshape(bsz)
+        ret_r_f = ret_r.reshape(bsz)
+        ret_c_f = ret_c.reshape(bsz)
+        adv_f = adv_total.reshape(bsz)
+        
+        # Track epoch loss
+        epoch_losses = []
+        epoch_vr_losses = []
+
+        for _ in range(cfg['update_epochs']):
+            perm = torch.randperm(bsz, device=device)
+            for start in range(0, bsz, cfg['minibatch_size']):
+                idx = perm[start : start + cfg['minibatch_size']]
+                
+                loss, loss_dict = lagrangian_loss(
+                    model, states_f[idx], actions_f[idx], adv_f[idx], logp_f[idx],
+                    ret_r_f[idx], ret_c_f[idx], 
+                    cfg['clip_ratio'], cfg['ent_coef'], cfg['vf_coef']
+                )
+                
+                opt.zero_grad()
+                loss.backward()
+                nn.utils.clip_grad_norm_(model.parameters(), cfg['max_grad_norm'])
+                opt.step()
+                
+                epoch_losses.append(loss_dict['loss_total'])
+                epoch_vr_losses.append(loss_dict['loss_vr'])
+
+        # Save average loss for plotting
+        train_loss_history.append(np.mean(epoch_losses))
+        train_v_loss_history.append(np.mean(epoch_vr_losses))
+        
+        # 4. Update Lambda
+        ep_cost = costs.sum(dim=0).mean()
+        lambda_param += cfg['lambda_lr'] * (ep_cost - cfg['cost_limit'])
+        lambda_param = torch.clamp(lambda_param, min=0.0)
+
+        # 5. Log & Eval
+        if itr % 10 == 0:
+            # Eval (returns 4 values now including loss)
+            avg_r, succ, coll, eval_v_loss = evaluate(model, eval_env, device, num_ep=20)
+            tqdm.write(f"Iter {itr} | Rw: {avg_r:.1f} | Cost: {ep_cost:.1f} | Lam: {lambda_param.item():.2f} | Loss: {train_loss_history[-1]:.2f}")
+            eval_rewards_history.append(avg_r)
+            
+            # --- Plot 1: Rewards ---
+            plt.figure()
+            iters_x = list(range(10, len(eval_rewards_history)*10 + 1, 10))
+            plt.plot(iters_x, eval_rewards_history)
+            plt.xlabel('Iterations'); plt.ylabel('Reward')
+            plt.title('Training Progress')
+            plt.savefig(f'{run_dir}/eval_reward_curve.png')
+            plt.close()
+            
+            # --- Plot 2: Training Loss ---
+            plt.figure()
+            plt.plot(train_loss_history, label='Total Loss')
+            plt.plot(train_v_loss_history, label='Value Loss', alpha=0.5)
+            plt.xlabel('Iterations'); plt.ylabel('Loss')
+            plt.title('Training Loss Curve')
+            plt.legend()
+            plt.savefig(f'{run_dir}/train_loss_curve.png')
+            plt.close()
+            
+        if itr % cfg['save_gif_freq'] == 0:
+            make_animation(model, eval_env, device, f"{run_dir}/iter_{itr}.gif")
+        
+        if cfg['checkpoint'] and itr % 50 == 0:
+            torch.save(model.state_dict(), f"{run_dir}/model_{itr}.pt")
+    
+    torch.save(model.state_dict(), f"{run_dir}/final_model.pt")
+    
+    # --- FINAL REPORT (TEST PHASE) ---
+    print("Generating Final Report and Test GIFs...")
+    # Pass run_dir to save test GIFs
+    final_r, final_succ, final_coll, final_v_loss = evaluate(model, eval_env, device, num_ep=100, save_gifs=True, save_dir=run_dir)
+    
+    report_path = f"{run_dir}/report.txt"
+    with open(report_path, "w") as f:
+        f.write("="*40 + "\n")
+        f.write("EXPERIMENT REPORT\n")
+        f.write("="*40 + "\n")
+        f.write(f"Date: {datetime.datetime.now()}\n\n")
+        
+        f.write("Hyperparameters:\n")
+        for k, v in cfg.items():
+            f.write(f"  {k}: {v}\n")
+            
+        f.write("\n" + "-"*40 + "\n")
+        f.write("Final Results (100 Episodes):\n")
+        f.write(f"  Avg Reward      : {final_r:.2f}\n")
+        f.write(f"  Success Rate    : {final_succ*100:.1f}%\n")
+        f.write(f"  Collision Rate  : {final_coll*100:.1f}%\n")
+        f.write(f"  Eval Value Loss : {final_v_loss:.4f}\n")
+        f.write(f"  Final Lambda    : {lambda_param.item():.4f}\n")
+        f.write("="*40 + "\n")
+        
+    print(f"Report saved to {report_path}")
+    print("Training Finished!")
+
+if __name__ == "__main__":
+    main()

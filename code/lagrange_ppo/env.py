@@ -2,230 +2,134 @@ import torch
 import numpy as np
 
 class IntersectionEnv:
-    def __init__(self, target_pos, agent_data_list, dt=0.1):
+    def __init__(self, target_pos, agent_data_list, config, dt=0.1):
         """
-        Custom Environment for Lagrangian PPO.
-        Separates Performance Reward and Safety Cost.
-        
-        Args:
-            target_pos (list): Target state [y, v].
-            agent_data_list (list): Expert trajectories.
-            dt (float): Time step.
+        Initialized with a config dictionary for easy hyperparameter tuning.
         """
         self.dt = dt
         self.target_pos = torch.tensor(target_pos, dtype=torch.float32)
+        
+        # Config
+        self.cfg = config
         
         # Dynamics: s_{t+1} = Fs_t + Ga_t
         self.F = torch.tensor([[1.0, dt], [0.0, 1.0]], dtype=torch.float32)
         self.G = torch.tensor([0.5 * dt**2, dt], dtype=torch.float32)
 
-        # Increased acceleration limit to cover data outliers
-        self.max_accel = 5.0  
+        # Physics Limits
+        self.max_accel = self.cfg['max_accel']
         
-        # Episode settings
-        self.episode_len_cap = 500 
-        self.max_steps = self.episode_len_cap 
-
+        # Collision Geometry (Radius sum)
+        self.collision_dist = self.cfg['robot_radius'] * 2.0 
+        
+        self.episode_len_cap = 500 # Max steps per episode (50 seconds)
+        
         # Data
         self.agent_data_list = agent_data_list 
         self.current_agent_traj = None 
         self.state = None 
-        self.steps = 0
+        self.steps = 0          # Index in the expert data
+        self.episode_steps = 0  # Steps taken in the current RL episode
 
     def reset(self):
-        """Resets ego state and selects a new agent trajectory."""
-        # 1. Initialize Ego (Fixed start at x=0.5, y=-1.25)
+        """Resets ego state using Collision Synchronization logic."""
+        # 1. Initialize Ego (Fixed start)
         self.state = torch.tensor([-1.25, 0.0], dtype=torch.float32) 
-        self.steps = 0
+        
+        # Reset counters
+        self.steps = 0 
+        self.episode_steps = 0
 
-        # 2. Randomly select an Agent recording
+        # 2. Select Agent Recording
         idx = np.random.randint(len(self.agent_data_list))
         self.current_agent_traj = self.agent_data_list[idx]
         
-        # ---------------------------------------------------------
-        # [Updated] Collision Synchronization
-        # Target: Sync Ego and Agent to arrive at (0.5, 0.0) simultaneously.
-        # ---------------------------------------------------------
-        
-        # Step A: Extract Agent positions (x, y are the first two columns)
+        # 3. Collision Sync
+        # Find frame where Agent is closest to Ego's path (x=0.5, y=0.0)
         agent_pos = self.current_agent_traj[:, :2] 
-        
-        # Step B: Calculate distance to the Ego's path center (x=0.5, y=0.0)
-        # We look for the moment the Agent crosses or gets closest to Ego's lane.
-        # Distance squared = (agent_x - 0.5)^2 + (agent_y - 0.0)^2
         dist_sq_to_conflict = (agent_pos[:, 0] - 0.5)**2 + (agent_pos[:, 1])**2
-        
-        # Find the time index where Agent is closest to the conflict point
         conflict_idx = np.argmin(dist_sq_to_conflict)
         
-        # Step C: Rewind time
-        # Ego takes approx 1.6s (16 steps) to accelerate from -1.25 to 0.0.
-        # We want to start the episode 1.5s ~ 2.5s BEFORE the conflict happens.
-        # This forces the Ego to make a decision (brake or rush) immediately.
+        # Rewind 15-25 steps (1.5s - 2.5s) to create interaction window
         steps_to_rewind = np.random.randint(15, 25) 
-        
         start_step = max(0, conflict_idx - steps_to_rewind)
         
-        # Set current step
+        # Set the data pointer to the calculated start
         self.steps = start_step
-        
-        # ---------------------------------------------------------
-        
-        # 3. Set max steps
-        traj_len = len(self.current_agent_traj)
-        frames_left = traj_len - self.steps
-        self.max_steps = self.steps + min(frames_left, self.episode_len_cap)
 
-        agent_info = self.current_agent_traj[self.steps] 
+        # Get initial agent info
+        safe_idx = min(self.steps, len(self.current_agent_traj) - 1)
+        agent_info = self.current_agent_traj[safe_idx] 
         return self._get_obs(agent_info)
 
     def step(self, action):
-        """
-        Executes one time step.
-        Returns: obs, reward (task), done, info (contains 'cost')
-        """
-        # --- 1. Data Formatting ---
+        """Step function with 'Freeze Agent' logic if data ends."""
         if not isinstance(action, torch.Tensor):
             action = torch.tensor(action, dtype=torch.float32)
 
-        # --- 2. Ego Dynamics Update ---
-        # Clamp action to physical limits (max_accel = 1.0 based on data)
+        # 1. Physics Update
         accel = torch.clamp(action, -self.max_accel, self.max_accel)
-        
-        # [Apply dynamics: s_next = F*s + G*a 
         self.state = torch.matmul(self.F, self.state) + self.G * accel
-        self.steps += 1
         
-        # --- 3. Termination Logic (The "Success" Check) ---
+        # Increment counters
+        self.steps += 1        # Advances data pointer
+        self.episode_steps += 1 # Advances episode timer
+        
         done = False
         is_success = False
+        is_collision = False
         
-        # Target y position (1.25)
-        target_y = self.target_pos[0].item() 
+        target_y = self.target_pos[0].item()
         
-        # Condition A: Reached Target (Success!)
-        if self.state[0] >= target_y:
-            done = True
-            is_success = True
-            
-            # Handle data index safely
-            safe_idx = min(self.steps, len(self.current_agent_traj) - 1)
-            agent_info = self.current_agent_traj[safe_idx]
-
-        # Condition B: Out of Bounds (Fail)
-        # If car goes backward too much or flies away
-        elif self.state[0] < -2 or self.state[0] > 2:
-            done = True
-            # Use last frame data
-            safe_idx = min(self.steps, len(self.current_agent_traj) - 1)
-            agent_info = self.current_agent_traj[safe_idx]
-
-        # Condition C: Timeout (Fail/Truncated)
-        elif self.steps >= self.max_steps:
-            done = True
-            safe_idx = min(self.steps, len(self.current_agent_traj) - 1)
-            agent_info = self.current_agent_traj[safe_idx]
-            
-        # Normal Step
-        else:
-            agent_info = self.current_agent_traj[self.steps]
+        # 2. Get Agent Data (Freeze Logic)
+        # If self.steps exceeds the recording length, we clamp the index to the last frame.
+        # The agent will appear to stop moving at the end of its trajectory.
+        traj_len = len(self.current_agent_traj)
+        safe_idx = min(self.steps, traj_len - 1)
+        agent_info = self.current_agent_traj[safe_idx]
         
-        # --- 4. Compute Signals ---
-        # Ensure agent_info is tensor
         if not isinstance(agent_info, torch.Tensor):
             agent_info = torch.tensor(agent_info, dtype=torch.float32)
 
-        agent_mu = agent_info[:2]      
-        # agent_sigma = torch.diag(agent_info[4:6]**2) 
-        raw_std_x = agent_info[4]
-        raw_std_y = agent_info[5]
+        # 3. Collision Check (Euclidean Distance)
+        ego_pos = torch.tensor([0.5, self.state[0]])
+        agent_pos = agent_info[:2]
+        dist = torch.norm(ego_pos - agent_pos).item()
         
-        # Enforce a minimum standard deviation of 0.8m (approx half car width + margin)
-        safe_std_x = torch.clamp(raw_std_x, min=0.01)
-        safe_std_y = torch.clamp(raw_std_y, min=0.01)
+        # --- Termination Logic ---
+        if dist < self.collision_dist:
+            done = True
+            is_collision = True
+        elif self.state[0] >= target_y:
+            done = True
+            is_success = True
+        elif self.state[0] < -6.0 or self.state[0] > 25.0: # Out of bounds
+            done = True
+        # Check timeout based on episode duration, NOT data length
+        elif self.episode_steps >= self.episode_len_cap: 
+            done = True
 
-        agent_sigma = torch.diag(torch.stack([safe_std_x**2, safe_std_y**2]))
-        # Calculate Step Reward and Safety Cost
-        reward, cost = self._compute_reward_and_cost(self.state, accel, agent_mu, agent_sigma)
+        # 4. Compute Reward & Soft Cost
+        reward, cost, metrics = self._compute_reward_and_cost(self.state, accel, agent_info)
         
-        # --- 5. Apply Bonuses and Penalties ---
-        
-        # BONUS: Large reward for reaching the goal (Success)
+        # 5. Apply Bonuses / Penalties
+        bonus = 0.0
         if is_success:
-            reward += 50.0 
+            reward += self.cfg['reward_success']
+            bonus = self.cfg['reward_success']
+        
+        if is_collision:
+            reward += self.cfg['reward_collision'] 
+            cost = self.cfg['cost_crash'] 
+            bonus = self.cfg['reward_collision']
             
-        # PENALTY: Large penalty for going out of bounds
-        if self.state[0] < -2.0 or self.state[0] > 2.0:
-            reward -= 50.0
+        metrics['bonus'] = bonus
+        metrics['total_reward'] = reward
+        metrics['final_cost'] = cost
 
-        # Pack cost into info for Lag-PPO
-        info = {"cost": cost}
+        info = {"cost": cost, **metrics}
         
         return self._get_obs(agent_info), reward, done, info
-
-    def _compute_reward_and_cost(self, ego_state, action, agent_mu, agent_sigma):
-        """
-        Redesigned Reward Function:
-        1. Task Reward: 
-           - Progress Reward: Positive reward for moving forward (v > 0).
-           - Speed Limit: Penalty for exceeding realistic limits.
-           - Comfort: Penalty for high acceleration.
-           
-        2. Safety Cost: 
-           - [cite_start]Bounded Mahalanobis Distance cost[cite: 56].
-        """
-        ego_y = ego_state[0]
-        ego_v = ego_state[1]
-        
-        # ==========================================
-        # Part 1: Performance Reward (Task)
-        # ==========================================
-        
-        # A. Progress Reward (Encourage moving towards goal)
-        # +0.2 per step if moving at 1 m/s (dt=0.1)
-        r_progress = 2.0 * ego_v * self.dt
-        
-        # B. Speed Limit Penalty (Simulate realistic constraints)
-        # Soft limit at 1.5 m/s. Penalize quadratic error if exceeded.
-        v_limit = 0.6
-        r_overspeed = 0.0
-        if ego_v > v_limit:
-            r_overspeed = -10.0 * ((ego_v - v_limit) ** 2)
-            
-        # C. Comfort/Control Penalty (Reduce jerky movements)
-        # Penalty proportional to squared acceleration 
-        r_comfort = -0.1 * (action.item() ** 2)
-        
-        # Total Task Reward
-        performance_reward = r_progress + r_overspeed + r_comfort
-
-        # ==========================================
-        # Part 2: Safety Cost (Constraint)
-        # ==========================================
-        # Based on Mahalanobis Distance from proposal
-        u_t = torch.tensor([0.5, ego_y]) 
-        delta = u_t - agent_mu
-        
-        try:
-            inv_sigma = torch.inverse(agent_sigma)
-        except RuntimeError:
-            # Fallback for singular matrices
-            inv_sigma = torch.eye(2) * 100 
-
-        # Calculate distance squared
-        mahalanobis_sq = torch.matmul(delta, torch.matmul(inv_sigma, delta))
-        
-        # # Cost Formulation: 1 / (dist^2 + epsilon)
-        # epsilon = 0.01
-        # raw_cost = 1.0 / (mahalanobis_sq + epsilon)
-        
-        # # Clamp cost to prevent numerical explosion during collisions
-        # # Max cost = 100.0
-        # safety_cost = torch.clamp(raw_cost, max=100.0).item()
-        safety_cost = torch.exp(-0.5 * mahalanobis_sq).item()
-        safety_cost = safety_cost * 100.0
-
-        return performance_reward.item(), safety_cost
 
     def _get_obs(self, agent_info):
         ego_obs = self.state 
@@ -233,62 +137,70 @@ class IntersectionEnv:
             agent_info = torch.tensor(agent_info, dtype=torch.float32)
         return torch.cat([ego_obs, agent_info]) 
         
-    # def _compute_reward_and_cost(self, ego_state, action, agent_mu, agent_sigma):
-    #     """
-    #     Computes:
-    #     1. Task Reward: r(s,a) = -TrackingCost 
-    #     2. Safety Cost: c(s,a) = 1 / (MahalanobisDist + eps)
-    #     """
-    #     # --- 1. Task Reward (Performance) ---
-    #     Q = torch.eye(2) 
-    #     r = 0.1
-    #     diff = ego_state - self.target_pos
+    def _compute_reward_and_cost(self, ego_state, action, agent_info):
+        """
+        Computes Task Reward and Soft Safety Cost.
+        """
+        ego_y = ego_state[0]
+        ego_v = ego_state[1]
         
-    #     state_cost = torch.matmul(diff, torch.matmul(Q, diff))
-    #     action_cost = r * (action ** 2)
+        # --- Task Reward ---
+        # 1. Progress
+        r_progress = self.cfg['w_progress'] * ego_v * self.dt
         
-    #     # Maximize reward = Minimize cost
-    #     # We do NOT include safety terms here for Lag-PPO
-    #     performance_reward = - (state_cost + action_cost)
+        # 2. Overspeed
+        v_limit = self.cfg['v_limit']
+        r_overspeed = 0.0
+        if ego_v > v_limit:
+            r_overspeed = -self.cfg['w_overspeed'] * ((ego_v - v_limit) ** 2)
+            
+        # 3. Comfort
+        r_comfort = -self.cfg['w_comfort'] * (action.item() ** 2)
+        
+        performance_reward = r_progress + r_overspeed + r_comfort
 
-    #     # --- 2. Safety Cost (Constraint) ---
-    #     u_t = torch.tensor([0.5, ego_state[0]]) 
-    #     delta = u_t - agent_mu
+        # --- Safety Cost ---
+        xa, ya = agent_info[0], agent_info[1]
+        s_xa, s_ya = agent_info[4], agent_info[5]
+        xe, ye = 0.5, ego_y
         
-    #     try:
-    #         inv_sigma = torch.inverse(agent_sigma)
-    #     except RuntimeError:
-    #         inv_sigma = torch.eye(2) * 100 
+        # Conservative Boundary Calculation
+        sigma_combined = torch.sqrt(s_xa**2 + s_ya**2)
+        safety_radius = self.collision_dist + sigma_combined
+        d_conservative_sq = safety_radius**2
+        
+        # Actual Distance Squared
+        d_actual_sq = (xe - xa)**2 + (ye - ya)**2
+        
+        # Soft Cost
+        raw_soft_cost = d_conservative_sq - d_actual_sq
+        if isinstance(raw_soft_cost, torch.Tensor):
+            raw_soft_cost = raw_soft_cost.item()
+            
+        soft_cost = self.cfg['cost_scale_mu'] * max(0.0, raw_soft_cost)
 
-    #     mahalanobis_sq = torch.matmul(delta, torch.matmul(inv_sigma, delta))
-        
-    #     epsilon = 0.01
-    #     # Inverse squared distance formulation 
-    #     raw_cost = 1.0 / (mahalanobis_sq + epsilon)
-        
-    #     # Clamp cost for stability (max cost ~ 100)
-    #     safety_cost = torch.clamp(raw_cost, max=100.0)
+        # Metrics for visualization
+        metrics = {
+            "r_prog": r_progress.item() if isinstance(r_progress, torch.Tensor) else r_progress,
+            "r_speed": r_overspeed.item() if isinstance(r_overspeed, torch.Tensor) else r_overspeed,
+            "r_comf": r_comfort,
+            "d_act": np.sqrt(d_actual_sq.item()) if isinstance(d_actual_sq, torch.Tensor) else np.sqrt(d_actual_sq),
+            "d_cons": np.sqrt(d_conservative_sq.item()) if isinstance(d_conservative_sq, torch.Tensor) else np.sqrt(d_conservative_sq)
+        }
 
-    #     return performance_reward.item(), safety_cost.item()
+        return performance_reward.item(), soft_cost, metrics
+    
     def render(self):
-        """
-        Returns the current state for visualization.
-        """
-        # Ego info
+        """Returns current state for visualization"""
         ego_pos = [0.5, self.state[0].item()]
         ego_v = self.state[1].item()
         
-        # Agent info
         safe_idx = min(self.steps, len(self.current_agent_traj) - 1)
         agent_info = self.current_agent_traj[safe_idx]
-        
         agent_pos = [agent_info[0], agent_info[1]]
-        # Agent data format: [x, y, vx, vy, ...] -> vx is index 2
         agent_v = agent_info[2] 
         
         return {
-            'ego_pos': ego_pos,
-            'ego_v': ego_v,
-            'agent_pos': agent_pos,
-            'agent_v': agent_v
+            'ego_pos': ego_pos, 'ego_v': ego_v,
+            'agent_pos': agent_pos, 'agent_v': agent_v
         }

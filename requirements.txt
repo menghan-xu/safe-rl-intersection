@@ -1,0 +1,40 @@
+# Core AI/ML
+torch
+numpy
+pandas
+scipy
+scikit-learn
+
+# Visualization & Plotting
+matplotlib==3.10.8
+
+# Reinforcement Learning Environment
+gymnasium==0.29.1
+pygame==2.6.1
+box2d-py==2.3.5
+
+# Utilities
+tqdm==4.65.0
+PyYAML==6.0.2
+absl-py==2.2.1
+cloudpickle==3.1.1
+filelock==3.18.0
+fsspec==2025.3.2
+joblib==1.4.2
+networkx==3.4.2
+packaging==24.2
+pillow==11.1.0
+
+# Dependencies
+contourpy
+cycler
+fonttools
+kiwisolver
+pyparsing
+python-dateutil
+pytz
+six
+tornado
+tzdata
+unicodedata2
+zipp
