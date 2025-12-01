@@ -27,7 +27,7 @@ robot_radius: 0.3328
 # Encourages moving forward 
 # Controls the urge to move. 
 # Increase if the agent refuses to move (freezing robot); Decrease if the agent ignores safety just to rush forward
-w_progress: 80
+w_progress: 280
 # Penalty coefficient applied when velocity exceeds v_limit
 # Increase if the agent consistently breaks the speed limit
 # Decrease if the agent is too afraid to accelerate near the limit
@@ -39,7 +39,7 @@ w_comfort: 0.697
 # A large one-time bonus for reaching the target position.
 # Should be the dominant reward. 
 # Increase if the agent wanders around without trying to finish the episode
-reward_success: 50.0
+reward_success: 100.0
 # A large one-time penalty for colliding with the agent.
 # Must be larger than any potential accumulated progress reward. 
 # Increase magnitude (more negative) if the agent learns that "crashing quickly" is better than "waiting slowly."
@@ -53,7 +53,7 @@ reward_collision: -100.0
 # Determines how sensitive the agent is to the safety boundary. 
 # Increase if the agent gets too close to the buffer zone without reacting; 
 # Decrease if the safety value explodes too early (causing instability)
-cost_scale_mu: 2
+cost_scale_mu: 20
 # The fixed cost value assigned when a physical collision occurs.
 # Keep this value high (e.g., 100) to send a strong signal to the Lagrangian multiplier ($\lambda$) that a constraint violation has occurred
 cost_crash: 100.0
