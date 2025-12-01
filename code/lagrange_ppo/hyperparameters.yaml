@@ -53,7 +53,7 @@ reward_collision: -100.0
 # Determines how sensitive the agent is to the safety boundary. 
 # Increase if the agent gets too close to the buffer zone without reacting; 
 # Decrease if the safety value explodes too early (causing instability)
-cost_scale_mu: 20
+cost_scale_mu: 2
 # The fixed cost value assigned when a physical collision occurs.
 # Keep this value high (e.g., 100) to send a strong signal to the Lagrangian multiplier ($\lambda$) that a constraint violation has occurred
 cost_crash: 100.0
