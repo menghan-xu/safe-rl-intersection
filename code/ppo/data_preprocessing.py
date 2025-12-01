@@ -3,14 +3,17 @@ import pandas as pd
 import numpy as np
 from scipy.interpolate import interp1d
 
-def process_single_track(csv_path, target_dt=0.1):
+def process_single_track(csv_path, target_dt=0.1, min_len=500):
     """
-    Reads the CSV file and performs downsampling/interpolation to a fixed dt=0.1s.
-    Retains columns: x, y, vx, vy, sx, sy.
+    Reads CSV, interpolates to dt=0.1s.
+    Logic: 
+    1. If length < 500: Pad to 500 (continue velocity until x >= 1.5 then stop).
+    2. If length >= 500: Keep original length (NO TRUNCATION).
     """
     col_names = ['time', 'x', 'y', 'yaw', 'vx', 'vy', 'sx', 'sy', 'svx', 'svy']
     df = pd.read_csv(csv_path, names=col_names, header=None)
 
+    # 1. Basic Cleaning
     df['time'] = pd.to_numeric(df['time'], errors='coerce')
     df = df.dropna(subset=['time'])
     
@@ -19,30 +22,59 @@ def process_single_track(csv_path, target_dt=0.1):
         df[col] = pd.to_numeric(df[col], errors='coerce')
     df = df.dropna(subset=target_cols)
 
+    # 2. Interpolation
     times = df['time'].values
     times = times - times[0]
-    
     max_time = times[-1]
     new_times = np.arange(0, max_time, target_dt)
     
-    # Interpolation, converts ~1000Hz data to 10Hz
-    target_cols = ['x', 'y', 'vx', 'vy', 'sx', 'sy']
     data_interpolated = []
-    
     for col in target_cols:
         f = interp1d(times, df[col].values, kind='linear', fill_value="extrapolate")
         data_interpolated.append(f(new_times))
         
     processed_data = np.stack(data_interpolated, axis=1)
+    
+    # ---------------------------------------------------------
+    # 3. Padding Logic Only (No Truncation)
+    # ---------------------------------------------------------
+    current_steps = processed_data.shape[0]
+
+    if current_steps < min_len:
+        steps_to_pad = min_len - current_steps
+        last_row = processed_data[-1]
+        
+        # Unpack last state
+        curr_x, curr_y = last_row[0], last_row[1]
+        curr_vx, curr_vy = last_row[2], last_row[3]
+        curr_sx, curr_sy = last_row[4], last_row[5]
+        
+        new_rows = []
+        
+        for _ in range(steps_to_pad):
+            if curr_x >= 1.5:
+                step_vx, step_vy = 0.0, 0.0
+            else:
+                step_vx, step_vy = curr_vx, curr_vy
+                curr_x += step_vx * target_dt
+                curr_y += step_vy * target_dt
+                
+
+                if curr_x >= 1.5:
+                    curr_x = 1.5
+            
+            new_row = [curr_x, curr_y, step_vx, step_vy, curr_sx, curr_sy]
+            new_rows.append(new_row)
+            
+        padding_array = np.array(new_rows)
+        processed_data = np.vstack([processed_data, padding_array])
+    
+
+
     return processed_data
 
 def load_all_data(root_dir):
-    """
-    Iterates through all subfolders in the root directory and processes 'agent.csv'.
-    """
     all_agent_trajs = []
-    
-
     subfolders = [f.path for f in os.scandir(root_dir) if f.is_dir()]
     
     print(f"Found {len(subfolders)} subfolders in {root_dir}")
@@ -52,10 +84,10 @@ def load_all_data(root_dir):
 
         if os.path.exists(agent_file):
             try:
-                agent_traj = process_single_track(agent_file, target_dt=0.1)
+                agent_traj = process_single_track(agent_file, target_dt=0.1, min_len=500)
                 all_agent_trajs.append(agent_traj)
                 
-                print(f"Loaded {os.path.basename(folder)}: Converted to {len(agent_traj)} steps.")
+                print(f"Loaded {os.path.basename(folder)}: Final shape {agent_traj.shape}")
             except Exception as e:
                 print(f"Error loading {folder}: {e}")
         else:
@@ -68,12 +100,13 @@ if __name__ == "__main__":
     
     training_data = load_all_data(root_path)
     
-    output_filename = "data/expert_agent_trajs.npy"
+
+    output_filename = "data/expert_agent_trajs_new.npy"
     np.save(output_filename, np.array(training_data, dtype=object))
     
     print(f"\nProcessing Complete! Saved {len(training_data)} trajectories to {output_filename}")
-
-
+    lengths = [t.shape[0] for t in training_data]
+    print(f"Trajectory lengths range from {min(lengths)} to {max(lengths)}")
 
 
 
