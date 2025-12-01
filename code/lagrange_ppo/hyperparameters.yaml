@@ -27,11 +27,11 @@ robot_radius: 0.3328
 # Encourages moving forward 
 # Controls the urge to move. 
 # Increase if the agent refuses to move (freezing robot); Decrease if the agent ignores safety just to rush forward
-w_progress: 17.11
+w_progress: 80
 # Penalty coefficient applied when velocity exceeds v_limit
 # Increase if the agent consistently breaks the speed limit
 # Decrease if the agent is too afraid to accelerate near the limit
-w_overspeed: 72.7
+w_overspeed: 30
 # Penalty coefficient for high acceleration (squared).
 # Increase to encourage smoother driving (less jerky); 
 # Decrease if the agent feels sluggish or unresponsive to sudden threats
@@ -53,7 +53,7 @@ reward_collision: -100.0
 # Determines how sensitive the agent is to the safety boundary. 
 # Increase if the agent gets too close to the buffer zone without reacting; 
 # Decrease if the safety value explodes too early (causing instability)
-cost_scale_mu: 463.2
+cost_scale_mu: 20
 # The fixed cost value assigned when a physical collision occurs.
 # Keep this value high (e.g., 100) to send a strong signal to the Lagrangian multiplier ($\lambda$) that a constraint violation has occurred
 cost_crash: 100.0
@@ -66,7 +66,7 @@ cost_crash: 100.0
 # Lower (towards 0) for stricter safety (no violations allowed); 
 # Higher to tolerate minor safety buffer infringements. 
 # For autonomous driving, keep this near zero.
-cost_limit: 0.1
+cost_limit: 1
 # Learning rate for Lambda (Dual Ascent).
 # Controls how fast the penalty weight ($\lambda$) grows when constraints are violated.
 # Increase if the agent continues to collide for many epochs without improvement; 
