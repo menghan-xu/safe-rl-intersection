@@ -212,48 +212,60 @@ def lagrangian_loss(agent, states, actions, adv, logp, ret_r, ret_c, clip, ent_c
         "loss_total": total_loss.item()
     }
 
-# Evaluate with Value Loss calculation and GIF saving support
 def evaluate(model, env, device, num_ep=100, save_gifs=False, save_dir=None):
     model.eval()
-    success = 0
-    collision = 0
+    success_count = 0
+    collision_count = 0
     total_r = []
-    total_value_loss = [] # Track critic accuracy
+    total_value_loss = [] 
     
+    saved_failure_gifs = 0
+    MAX_FAILURE_GIFS = 20
+    success_times = []
     for ep_i in range(num_ep):
         obs, _ = env.reset()
         obs = torch.from_numpy(obs).float().to(device).unsqueeze(0)
         done = False
         ep_r = 0
         min_dist = float('inf')
-        
-        # For Value Loss Calculation
+        ep_steps = 0
         ep_values = []
         ep_rewards = []
         
-        # GIF saving logic for Test Phase
-        if save_gifs and save_dir and ep_i < 5: # Save first 5 episodes as sample
-             gif_path = f"{save_dir}/test_ep_{ep_i}.gif"
-             # We use make_animation which runs its own episode, so we call it separately
-             # Note: This is slightly inefficient (runs extra episodes) but cleaner code-wise
-             make_animation(model, env, device, gif_path)
-
+        #  Cache frames for potential GIF generation
+        frames_data = [] 
+        
         while not done:
+            # 1. Record Frame Data (Before step)
+            if save_gifs:
+                render_info = env.env.render()
+                frames_data.append({
+                    'ego_pos': render_info['ego_pos'],
+                    'agent_pos': render_info['agent_pos'],
+                    'ego_v': render_info['ego_v'],
+                    'agent_v': render_info['agent_v']
+                })
+
+            # 2. Get Action
             with torch.no_grad():
                 x = model.trunk(obs)
                 action = torch.tanh(model.mu_head(x)) * model.max_action
-                
-                # Get Value estimate for loss calc
                 val_r = model.reward_value_head(x)
                 ep_values.append(val_r.item())
-                
                 action_scalar = action.cpu().numpy().item()
             
-            next_obs, r, term, trunc, _ = env.step(action_scalar)
+            # 3. Step
+            next_obs, r, term, trunc, info = env.step(action_scalar)
+            
+            #  Cache extra info for dashboard
+            if save_gifs:
+                frames_data[-1]['info'] = info # Append metrics to the last frame
+            
             ep_r += r
             ep_rewards.append(r)
-            
-            render_info = env.env.render()
+            ep_steps += 1
+            # 4. Metrics
+            render_info = env.env.render() # Get updated state
             e_pos = np.array(render_info['ego_pos'])
             a_pos = np.array(render_info['agent_pos'])
             dist = np.linalg.norm(e_pos - a_pos)
@@ -262,28 +274,99 @@ def evaluate(model, env, device, num_ep=100, save_gifs=False, save_dir=None):
             done = term or trunc
             obs = torch.from_numpy(next_obs).float().to(device).unsqueeze(0)
             
+            # 5. Outcome Check
+            is_success = False
+            is_collision = False
             if done:
                 if env.env.state[0] >= env.env.target_pos[0]: 
-                    success += 1
+                    success_count += 1
+                    is_success = True
+                    success_times.append(ep_steps * env.env.dt)
                 if min_dist < env.env.collision_dist: 
-                    collision += 1
+                    collision_count += 1
+                    is_collision = True
 
-        # Compute Critic Loss (MSE between predicted Value and actual discounted Return)
-        # Simple Monte Carlo return calculation
+        # ---  Conditional GIF Saving ---
+        # Save only if FAILED (Collision or Timeout/Out-of-bounds)
+        if save_gifs and save_dir and saved_failure_gifs < MAX_FAILURE_GIFS:
+            if not is_success: # Capture both collision and timeout
+                filename = f"{save_dir}/fail_ep_{ep_i}_col_{is_collision}.gif"
+                save_cached_animation(frames_data, filename)
+                saved_failure_gifs += 1
+
+        # Compute Value Loss
         returns = []
         G = 0
         for r in reversed(ep_rewards):
-            G = r + 0.99 * G # assuming gamma=0.99 for eval
+            G = r + 0.99 * G 
             returns.insert(0, G)
-        
-        # Calculate MSE
-        v_loss = np.mean([(v - ret)**2 for v, ret in zip(ep_values, returns)])
-        total_value_loss.append(v_loss)
+        if len(ep_values) > 0:
+            v_loss = np.mean([(v - ret)**2 for v, ret in zip(ep_values, returns)])
+            total_value_loss.append(v_loss)
         total_r.append(ep_r)
-        
+    if len(success_times) > 0:
+        avg_time = np.mean(success_times)
+    else:
+        avg_time = 0.0 # No success, no time
     model.train()
-    return np.mean(total_r), success/num_ep, collision/num_ep, np.mean(total_value_loss)
+    avg_v_loss = np.mean(total_value_loss) if len(total_value_loss) > 0 else 0.0
+    return np.mean(total_r), success_count/num_ep, collision_count/num_ep, avg_v_loss, avg_time
 
+#  Helper function to save GIF from cached data
+def save_cached_animation(frames_data, filename):
+    fig, ax = plt.subplots(figsize=(6, 7))
+    ax.set_xlim(-3.0, 3.0); ax.set_ylim(-3.0, 11.0)
+    ax.set_aspect('equal')
+    ax.grid(True, linestyle='--', alpha=0.4)
+    ax.set_title(f"Failure Case Replay")
+    
+    ax.plot([-5, 5], [0, 0], 'k--', alpha=0.3)
+    ax.plot([0.5, 0.5], [-5, 15], 'k--', alpha=0.3)
+
+    ego_dot, = ax.plot([], [], 'bo', label='Ego', markersize=8)
+    agent_dot, = ax.plot([], [], 'ro', label='Agent', markersize=8)
+    
+    ROBOT_W, ROBOT_L = 0.43, 0.508
+    ego_box = Rectangle((0,0), ROBOT_W, ROBOT_L, angle=0.0, color='blue', alpha=0.2)
+    agent_box = Rectangle((0,0), ROBOT_W, ROBOT_L, angle=0.0, color='red', alpha=0.2)
+    ax.add_patch(ego_box); ax.add_patch(agent_box)
+
+    text_box = ax.text(-2.8, 10.5, "", fontsize=8.5, verticalalignment='top', 
+                       bbox=dict(facecolor='white', alpha=0.9, edgecolor='gray'))
+    
+    def update(frame_idx):
+        data = frames_data[frame_idx]
+        e_x, e_y = data['ego_pos']
+        a_x, a_y = data['agent_pos']
+        
+        ego_dot.set_data([e_x], [e_y])
+        agent_dot.set_data([a_x], [a_y])
+        ego_box.set_xy((e_x - ROBOT_W/2, e_y - ROBOT_L/2))
+        agent_box.set_xy((a_x - ROBOT_W/2, a_y - ROBOT_L/2))
+        
+        dist = np.linalg.norm(np.array([e_x, e_y]) - np.array([a_x, a_y]))
+        m = data.get('info', {})
+        
+        info_str = (
+            f"Step: {frame_idx}\nDist: {dist:.3f} m\n"
+            f"Ego V: {data['ego_v']:.2f}\nAgent V: {data['agent_v']:.2f}\n"
+            f"R_Prog: {m.get('r_prog',0):.2f}\nCost: {m.get('cost',0):.1f}"
+        )
+        text_box.set_text(info_str)
+        
+        bbox = text_box.get_bbox_patch()
+        if bbox:
+            bbox.set_edgecolor('red' if dist < 0.67 else 'gray')
+            bbox.set_linewidth(2 if dist < 0.67 else 1)
+            
+        return ego_dot, agent_dot, ego_box, agent_box, text_box
+
+    anim = FuncAnimation(fig, update, frames=len(frames_data), interval=80, blit=True)
+    try:
+        anim.save(filename, writer=PillowWriter(fps=12))
+    except:
+        pass
+    plt.close(fig)
 # ==========================================
 # 3. Main Runner
 # ==========================================
@@ -305,9 +388,9 @@ def main():
         yaml.dump(cfg, f)
 
     # 3. Load Data
-    data_path = "../../data/expert_agent_trajs.npy"
+    data_path = "../../data/expert_agent_trajs_new.npy"
     if not os.path.exists(data_path):
-        data_path = "data/expert_agent_trajs.npy"
+        data_path = "data/expert_agent_trajs_new.npy"
     
     print(f"Loading expert data from {data_path}...")
     expert_data = np.load(data_path, allow_pickle=True)
@@ -430,7 +513,7 @@ def main():
         # 5. Log & Eval
         if itr % 10 == 0:
             # Eval (returns 4 values now including loss)
-            avg_r, succ, coll, eval_v_loss = evaluate(model, eval_env, device, num_ep=20)
+            avg_r, succ, coll, eval_v_loss,_ = evaluate(model, eval_env, device, num_ep=20)
             tqdm.write(f"Iter {itr} | Rw: {avg_r:.1f} | Cost: {ep_cost:.1f} | Lam: {lambda_param.item():.2f} | Loss: {train_loss_history[-1]:.2f}")
             eval_rewards_history.append(avg_r)
             
@@ -456,7 +539,7 @@ def main():
         if itr % cfg['save_gif_freq'] == 0:
             make_animation(model, eval_env, device, f"{run_dir}/iter_{itr}.gif")
         
-        if cfg['checkpoint'] and itr % 50 == 0:
+        if cfg['checkpoint'] and itr % 100 == 0:
             torch.save(model.state_dict(), f"{run_dir}/model_{itr}.pt")
     
     torch.save(model.state_dict(), f"{run_dir}/final_model.pt")
@@ -464,7 +547,7 @@ def main():
     # --- FINAL REPORT (TEST PHASE) ---
     print("Generating Final Report and Test GIFs...")
     # Pass run_dir to save test GIFs
-    final_r, final_succ, final_coll, final_v_loss = evaluate(model, eval_env, device, num_ep=100, save_gifs=True, save_dir=run_dir)
+    final_r, final_succ, final_coll, final_v_loss,final_time = evaluate(model, eval_env, device, num_ep=100, save_gifs=True, save_dir=run_dir)
     
     report_path = f"{run_dir}/report.txt"
     with open(report_path, "w") as f:
@@ -482,6 +565,7 @@ def main():
         f.write(f"  Avg Reward      : {final_r:.2f}\n")
         f.write(f"  Success Rate    : {final_succ*100:.1f}%\n")
         f.write(f"  Collision Rate  : {final_coll*100:.1f}%\n")
+        f.write(f"  Avg Success Time: {final_time:.2f} s\n")
         f.write(f"  Eval Value Loss : {final_v_loss:.4f}\n")
         f.write(f"  Final Lambda    : {lambda_param.item():.4f}\n")
         f.write("="*40 + "\n")

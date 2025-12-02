@@ -148,6 +148,7 @@ class IntersectionEnv:
         # 1. Progress
         r_progress = self.cfg['w_progress'] * ego_v * self.dt
         
+        r_time = -self.cfg['w_time_penalty']
         # 2. Overspeed
         v_limit = self.cfg['v_limit']
         r_overspeed = 0.0
