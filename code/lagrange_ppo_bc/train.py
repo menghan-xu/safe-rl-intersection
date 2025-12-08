@@ -388,9 +388,9 @@ def main():
         yaml.dump(cfg, f)
 
     # 3. Load Data
-    data_path = "../../data/expert_agent_trajs_new.npy"
+    data_path = "../../data/expert_agent_trajs.npy"
     if not os.path.exists(data_path):
-        data_path = "data/expert_agent_trajs_new.npy"
+        data_path = "data/expert_agent_trajs.npy"
     
     print(f"Loading expert data from {data_path}...")
     expert_data = np.load(data_path, allow_pickle=True)
@@ -550,7 +550,18 @@ def main():
         if itr % 10 == 0:
             # Eval (returns 4 values now including loss)
             avg_r, succ, coll, eval_v_loss,_ = evaluate(model, eval_env, device, num_ep=20)
-            tqdm.write(f"Iter {itr} | Rw: {avg_r:.1f} | Cost: {ep_cost:.1f} | Lam: {lambda_param.item():.2f} | Loss: {train_loss_history[-1]:.2f}")
+            # tqdm.write(f"Iter {itr} | Rw: {avg_r:.1f} | Cost: {ep_cost:.1f} | Lam: {lambda_param.item():.2f} | Loss: {train_loss_history[-1]:.2f}")
+            last_bc_loss = epoch_bc_losses[-1] if 'epoch_bc_losses' in locals() and len(epoch_bc_losses) > 0 else 0.0
+            last_vr_loss = epoch_vr_losses[-1] if len(epoch_vr_losses) > 0 else 0.0
+
+            tqdm.write(
+                f"Iter {itr} | "
+                f"R: {avg_r:.1f} | "
+                f"C: {ep_cost:.1f} | "
+                f"L_BC: {last_bc_loss:.4f} | "  
+                f"L_VR: {last_vr_loss:.1f} | " 
+                f"L_Tot: {train_loss_history[-1]:.1f}"
+            )
             eval_rewards_history.append(avg_r)
             
             # --- Plot 1: Rewards ---
