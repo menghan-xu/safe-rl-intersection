@@ -141,7 +141,7 @@ Given we have a well-collected expert dataset, we want the model to leverage exp
 
 At the same time, we still want the agent to explore new possibilities and avoid distribution shift, while treating expert actions as a reference rather than a hard constraint.
 
-$$\mathcal{l}_{BC}(\theta) = \frac{1}{N} \sum_{i=1}^{N} \left\| \mu_\theta(s_i) - a_i^* \right\|^2_2$$
+$$\mathcal{l}_{BC}(\theta) = \frac{1}{N} \sum_{i=1}^{N} || \mu_\theta(s_i) - a_i^* ||^2_2$$
 
 $\mu_\theta(s_i)$ is the action we chose given the current policy $\pi_{\theta}$
 
