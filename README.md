@@ -66,7 +66,7 @@ $$A^{Lag}_t = A^R_t - \lambda A^C_t$$
 
 The policy $\pi_\theta$ is updated by maximizing the PPO surrogate objective using $A^{Lag}_t$. 
 
-$$l_{\pi}(\theta) = -\sum_{s,a}\min \{\frac{\pi_{\theta}(a|s)}{\pi_{\theta_t}(a|s)}A_t^{Lag},\text{clip}(\frac{\pi_{\theta}(a|s)}{\pi_{\theta_t}(a|s)}, 1-\epsilon, 1+\epsilon)A_t^{Lag} \}$$
+$$l_{\pi}(\theta) = -\sum_{s,a}\min (\frac{\pi_{\theta}(a|s)}{\pi_{\theta_t}(a|s)}A_t^{Lag},\text{clip}(\frac{\pi_{\theta}(a|s)}{\pi_{\theta_t}(a|s)}, 1-\epsilon, 1+\epsilon)A_t^{Lag} )$$
 
 Simultaneously, the Lagrange multiplier $\lambda$ is updated via dual gradient ascent to satisfy the safety constraint:
 $$\lambda_{k+1} = \max \left( 0, \lambda_k + \eta_{\lambda} (J_C(\pi_\theta) - d) \right)$$
