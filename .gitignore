@@ -20,6 +20,7 @@ intersection_data_1106/
 *.pkl
 
 code/lagrange_ppo/learned_policies
+code/lagrange_ppo_bc/learned_policies
 code/ppo/learned_policies
 runs/
 *.pt

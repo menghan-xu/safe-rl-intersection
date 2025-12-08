@@ -44,6 +44,8 @@ $$r_{collison} =
 \end{cases}
 $$
 
+Add time penalty to the ego to push it reach target sooner if possible.
+$r_{time} = -w_{time} \cdot \Delta t$
 **Cost Function (Safety)** 
 <!-- Safety is quantified using the Mahalanobis distance, which accounts for the probabilistic nature of the agent's position. We define the squared Mahalanobis distance $D^2$ between the ego position $u_t$ and the agent's distribution $\mathcal{N}(\mu_t, \Sigma_t)$ as:$$D^2(u_t, \mu_t) = (u_t - \mu_t)^\top \Sigma_t^{-1} (u_t - \mu_t)$$The safety cost $c_t$ is formulated as an exponential barrier function bounded between $[0, 100]$, ensuring a smooth gradient as the risk increases:$$c(s_t, a_t) = 100 \cdot \exp \left( -\frac{D^2(u_t, \mu_t)}{2} \right)$$ -->
 $R_{ego}$ is the half-diagonal of the ego, and \(R_{agent}\) is the half-diagonal of the agent. In our setting, the Jackal robot’s half-diagonal is $0.3328\,\text{m}$.
@@ -81,9 +83,7 @@ Eta (w_comfort)    : 0.697
 Beta (w_overspeed) : 72.7
 Mu (cost_scale)    : 463.2
 
-### To my teammates 🤣
-To Doris, I set dt = 0.1 because I checked all the agent CSV files, and some of them have a minimum dt of around 0.02. So if we set dt = 0.01, we wouldn't be able to use the original timestamps directly. Since Mark said anything between 0.1 and 0.01 is fine, I went with 0.1. :)
-
+### Set up
 
 
 **Install packages**
@@ -136,11 +136,17 @@ This folder contains:
 
 Feel free to message me if you have any questions!
 
+## Lagrangian PPO with Behavior Cloning
+Given we have a well-collected expert dataset, we want the model to leverage expert demonstrations by adding a behavior cloning loss as an auxiliary objective, so the policy can anchor itself to expert behavior.
 
+At the same time, we still want the agent to explore new possibilities and avoid distribution shift, while treating expert actions as a reference rather than a hard constraint.
 
-## Some new ideas(might work on it on Sunday)
+$$\mathcal{l}_{BC}(\theta) = \frac{1}{N} \sum_{i=1}^{N} \left\| \mu_\theta(s_i) - a_i^* \right\|^2_2$$
+
+$\mu_\theta(s_i)$ is the action we chose given the current policy $\pi_{\theta}$
+
+Adding the behavior cloning loss to the total loss with a multiplier $w_{BC}$, we regularize the policy towards expert behavior while still optimizing the RL objective.
+
+## Some other new ideas
 1. Physics-Informed Residual Architecture
 Introduce a hybrid control scheme where actions are decomposed into $a_t = a_{\text{LQR}}(s_t) + a_{\theta}(s_t)$. The RL agent only learns the residual adjustment ($a_{\theta}$) needed for collision avoidance, while the LQR controller handles vehicle kinematics and stability.
-
-2. Demonstration-Guided Exploration 
-   Accelerate training by incorporating an Auxiliary Behavior Cloning (BC) Loss. This leverages the limited expert data to guide the residual policy toward human-like evasive maneuvers in critical states, reducing sample inefficiency.

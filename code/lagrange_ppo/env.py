@@ -148,7 +148,7 @@ class IntersectionEnv:
         # 1. Progress
         r_progress = self.cfg['w_progress'] * ego_v * self.dt
         
-        r_time = -self.cfg['w_time_penalty']
+        r_time = -self.cfg['w_time_penalty'] * self.dt
         # 2. Overspeed
         v_limit = self.cfg['v_limit']
         r_overspeed = 0.0
@@ -158,7 +158,7 @@ class IntersectionEnv:
         # 3. Comfort
         r_comfort = -self.cfg['w_comfort'] * (action.item() ** 2)
         
-        performance_reward = r_progress + r_overspeed + r_comfort
+        performance_reward = r_progress + r_overspeed + r_comfort + r_time
 
         # --- Safety Cost ---
         xa, ya = agent_info[0], agent_info[1]
