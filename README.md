@@ -1,3 +1,10 @@
+# Updates 12-09
+
+(1) Changed the data processing files according to new expert data.
+(2) Saved the best training policy with the largest reward (you guys can also try lowest loss instead).
+(3) Included the best results I have so far in the folder `learned_policies`.
+
+
 # Safe Reinforcement Learning for Intersection Navigation
 
 This project addresses the challenge of decision-making for autonomous vehicles navigating unsignalized intersections under uncertainty. Our primary objective is to enable an ego vehicle to safely cross a $3m \times 3m$ intersection while avoiding collisions with a human-driven agent vehicle that follows probabilistic trajectories.
