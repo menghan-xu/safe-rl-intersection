@@ -1,4 +1,5 @@
 import os
+import re
 import pandas as pd
 import numpy as np
 from scipy.interpolate import interp1d
@@ -9,9 +10,25 @@ def process_single_track(csv_path, target_dt=0.1, min_len=500):
     Logic: 
     1. If length < 500: Pad to 500 (continue velocity until x >= 1.5 then stop).
     2. If length >= 500: Keep original length (NO TRUNCATION).
+    
+    Handles both CSV files with headers and without headers.
     """
     col_names = ['time', 'x', 'y', 'yaw', 'vx', 'vy', 'sx', 'sy', 'svx', 'svy']
-    df = pd.read_csv(csv_path, names=col_names, header=None)
+    
+    # Read CSV - pandas will auto-detect if there's a header
+    df = pd.read_csv(csv_path)
+    
+    # Check if 'time' column exists (files with headers will have it)
+    # If not, assume no header and re-read with column names
+    if 'time' not in df.columns:
+        df = pd.read_csv(csv_path, names=col_names, header=None)
+    else:
+        # File has header, ensure we only use the columns we need
+        # Select only the columns that exist and are in our expected list
+        available_cols = [col for col in col_names if col in df.columns]
+        df = df[available_cols]
+        # Rename to match expected order (in case columns are in different order)
+        df.columns = col_names[:len(df.columns)]
 
     # 1. Basic Cleaning
     df['time'] = pd.to_numeric(df['time'], errors='coerce')
@@ -74,6 +91,10 @@ def process_single_track(csv_path, target_dt=0.1, min_len=500):
     return processed_data
 
 def load_all_data(root_dir):
+    """
+    Load agent trajectories from subdirectories (original structure).
+    Each subdirectory should contain an 'agent.csv' file.
+    """
     all_agent_trajs = []
     subfolders = [f.path for f in os.scandir(root_dir) if f.is_dir()]
     
@@ -95,18 +116,68 @@ def load_all_data(root_dir):
                 
     return all_agent_trajs
 
-if __name__ == "__main__":
-    root_path = "../../intersection_data_1106" 
+def load_noisy_folder(folder_path):
+    """
+    Load agent trajectories from a noisy data folder where CSV files are directly in the folder.
+    Files should be named like 'noisy_agent_1.csv', 'noisy_agent_2.csv', etc.
+    """
+    all_agent_trajs = []
     
-    training_data = load_all_data(root_path)
+    if not os.path.exists(folder_path):
+        print(f"Warning: Folder {folder_path} does not exist. Skipping.")
+        return all_agent_trajs
     
+    # Get all CSV files in the folder
+    csv_files = [f for f in os.listdir(folder_path) if f.endswith('.csv')]
+    
+    # Filter for agent files
+    agent_files = sorted([f for f in csv_files if 'agent' in f.lower()])
+    
+    print(f"Processing {folder_path}: Found {len(agent_files)} agent files.")
+    
+    for agent_file in agent_files:
+        agent_path = os.path.join(folder_path, agent_file)
+        try:
+            agent_traj = process_single_track(agent_path, target_dt=0.1, min_len=500)
+            all_agent_trajs.append(agent_traj)
+            print(f"Loaded {agent_file}: Final shape {agent_traj.shape}")
+        except Exception as e:
+            print(f"Error loading {agent_path}: {e}")
+    
+    return all_agent_trajs
 
-    output_filename = "data/expert_agent_trajs_new.npy"
-    np.save(output_filename, np.array(training_data, dtype=object))
+if __name__ == "__main__":
+    # Configuration
+    # root_path = "./intersection_data_1106"
+    noisy_folders = ['noisy_keep_straight', 'noisy_leftturn', 'noisy_rightturn']
     
-    print(f"\nProcessing Complete! Saved {len(training_data)} trajectories to {output_filename}")
-    lengths = [t.shape[0] for t in training_data]
-    print(f"Trajectory lengths range from {min(lengths)} to {max(lengths)}")
+    all_training_data = []
+    
+    # Process original data structure (subdirectories with agent.csv)
+    if os.path.exists(root_path):
+        training_data = load_all_data(root_path)
+        all_training_data.extend(training_data)
+    else:
+        print(f"Warning: {root_path} does not exist. Skipping.")
+    
+    # Process noisy data folders (CSV files directly in folders)
+    for noisy_folder in noisy_folders:
+        if os.path.exists(noisy_folder):
+            noisy_data = load_noisy_folder(noisy_folder)
+            all_training_data.extend(noisy_data)
+        else:
+            print(f"Warning: {noisy_folder} does not exist. Skipping.")
+
+    output_filename = "data/expert_agent_trajs.npy"
+    os.makedirs(os.path.dirname(output_filename), exist_ok=True)
+    np.save(output_filename, np.array(all_training_data, dtype=object))
+    
+    print(f"\nProcessing Complete! Saved {len(all_training_data)} trajectories to {output_filename}")
+    if len(all_training_data) > 0:
+        lengths = [t.shape[0] for t in all_training_data]
+        print(f"Trajectory lengths range from {min(lengths)} to {max(lengths)}")
+    else:
+        print("Warning: No trajectories were processed.")
 
 
 
