@@ -1,7 +1,9 @@
 # Updates 12-09
 
-(1) Changed the data processing files according to new expert data.
+(1) Changed the data processing files according to new expert data, with the processed data shown in the `data` folder.
+
 (2) Saved the best training policy with the largest reward (you guys can also try lowest loss instead).
+
 (3) Included the best results I have so far in the folder `learned_policies`.
 
 
