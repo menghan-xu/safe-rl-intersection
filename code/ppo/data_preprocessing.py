@@ -148,8 +148,16 @@ def load_noisy_folder(folder_path):
 
 if __name__ == "__main__":
     # Configuration
-    # root_path = "./intersection_data_1106"
-    noisy_folders = ['noisy_keep_straight', 'noisy_leftturn', 'noisy_rightturn']
+    # Get the project root directory (two levels up from code/ppo/)
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    project_root = os.path.dirname(os.path.dirname(script_dir))
+    
+    root_path = os.path.join(project_root, "intersection_data_1106")
+    noisy_folders = [
+        os.path.join(project_root, "noisy_keep_straight"),
+        os.path.join(project_root, "noisy_leftturn"),
+        os.path.join(project_root, "noisy_rightturn")
+    ]
     
     all_training_data = []
     
