@@ -446,6 +446,10 @@ def main():
     train_loss_history = [] # Total loss
     train_v_loss_history = [] # Value loss
     
+    # Track best reward for model saving
+    best_reward = float('-inf')
+    best_epoch = 0
+    
     # --- Loop ---
     for itr in tqdm(range(1, cfg['epochs'] + 1)):
         # 1. Rollout
@@ -579,9 +583,16 @@ def main():
             plt.plot(train_v_loss_history, label='Value Loss', alpha=0.5)
             plt.xlabel('Iterations'); plt.ylabel('Loss')
             plt.title('Training Loss Curve')
+            plt.yscale('log')  # Semilog plot on y-axis
             plt.legend()
             plt.savefig(f'{run_dir}/train_loss_curve.png')
             plt.close()
+            
+            # Track best reward and save model
+            if avg_r > best_reward:
+                best_reward = avg_r
+                best_epoch = itr
+                torch.save(model.state_dict(), f"{run_dir}/best_model.pt")
             
         if itr % cfg['save_gif_freq'] == 0:
             make_animation(model, eval_env, device, f"{run_dir}/iter_{itr}.gif")
@@ -589,7 +600,14 @@ def main():
         if cfg['checkpoint'] and itr % 100 == 0:
             torch.save(model.state_dict(), f"{run_dir}/model_{itr}.pt")
     
-    torch.save(model.state_dict(), f"{run_dir}/final_model.pt")
+    # Load and save the best model (highest reward epoch) as final model
+    if best_epoch > 0:
+        print(f"Loading best model from epoch {best_epoch} with reward {best_reward:.2f}")
+        model.load_state_dict(torch.load(f"{run_dir}/best_model.pt"))
+        torch.save(model.state_dict(), f"{run_dir}/final_model.pt")
+    else:
+        # Fallback: save current model if no evaluation was performed
+        torch.save(model.state_dict(), f"{run_dir}/final_model.pt")
     
     # --- FINAL REPORT (TEST PHASE) ---
     print("Generating Final Report and Test GIFs...")
