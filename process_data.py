@@ -77,92 +77,114 @@ def process_single_scenario(folder_path):
     # Use the shared processing function
     return process_single_file_pair(agent_file, ego_file, folder_path)
 
+def process_agent_only_trajectory(agent_file):
+    """
+    Process a single agent-only CSV file (no ego data available).
+    Returns agent trajectory data: [x_agent, y_agent, vx_agent, vy_agent, sx_agent, sy_agent]
+    """
+    try:
+        df_agent = pd.read_csv(agent_file)
+        
+        # Ensure time column exists and is numeric
+        if 'time' not in df_agent.columns:
+            print(f"Warning: {agent_file} missing 'time' column. Skipping.")
+            return None
+        
+        df_agent['time'] = pd.to_numeric(df_agent['time'], errors='coerce')
+        df_agent = df_agent.dropna(subset=['time'])
+        
+        # Get time range
+        t_start = df_agent['time'].iloc[0]
+        t_end = df_agent['time'].iloc[-1]
+        
+        if t_end - t_start < DT:
+            print(f"Warning: {agent_file} duration too short. Skipping.")
+            return None
+        
+        # Create standard time grid
+        num_points = int(np.ceil((t_end - t_start) / DT)) + 1
+        t_grid = np.linspace(t_start, t_end, num_points)
+        t_grid = t_grid[t_grid <= t_end]
+        
+        # Interpolate agent data
+        def interpolate_data(df, target_times):
+            df_times = df['time'].values
+            valid_mask = (target_times >= df_times[0]) & (target_times <= df_times[-1])
+            
+            if not np.all(valid_mask):
+                extrapolated = np.sum(~valid_mask)
+                if extrapolated > len(target_times) * 0.1:
+                    print(f"Warning: {agent_file} requires extrapolation for {extrapolated}/{len(target_times)} points")
+            
+            f = interp1d(df_times, df.values, axis=0, kind='linear', 
+                         bounds_error=False, fill_value="extrapolate")
+            interpolated_data = f(target_times)
+            return pd.DataFrame(interpolated_data, columns=df.columns)
+        
+        agent_interp = interpolate_data(df_agent, t_grid)
+        
+        # Extract agent features: [x_agent, y_agent, vx_agent, vy_agent, sx_agent, sy_agent]
+        x_agent = agent_interp['x'].values
+        y_agent = agent_interp['y'].values
+        vx_agent = agent_interp['vx'].values
+        vy_agent = agent_interp['vy'].values
+        sx_agent = agent_interp['sx'].values
+        sy_agent = agent_interp['sy'].values
+        
+        # Create agent trajectory (N, 6)
+        agent_traj = np.stack([
+            x_agent, y_agent, vx_agent, vy_agent, sx_agent, sy_agent
+        ], axis=1)
+        
+        return agent_traj
+        
+    except Exception as e:
+        print(f"Error processing {agent_file}: {e}")
+        return None
+
 def process_noisy_folder_agent_trajectories(folder_path):
     """
-    Process a noisy data folder to extract agent trajectories with matching ego files.
-    Returns list of (states, actions) tuples and their metadata.
+    Process a noisy data folder to extract agent-only trajectories.
+    Since ego files are not available, we process agent trajectories directly.
+    Returns list of agent trajectories and their metadata.
     """
-    all_states = []
-    all_actions = []
+    all_agent_trajectories = []
     trajectory_metadata = []  # Store metadata for tracking
     
     if not os.path.exists(folder_path):
         print(f"Warning: Folder {folder_path} does not exist. Skipping.")
-        return all_states, all_actions, trajectory_metadata
+        return all_agent_trajectories, trajectory_metadata
     
     # Get all CSV files in the folder
     csv_files = [f for f in os.listdir(folder_path) if f.endswith('.csv')]
     
-    # Separate agent and ego files
+    # Get agent files only
     agent_files = sorted([f for f in csv_files if 'agent' in f.lower()])
-    ego_files = sorted([f for f in csv_files if 'ego' in f.lower()])
-    
-    # Check parent directory for ego files if not found in folder
-    if len(ego_files) == 0:
-        parent_dir = os.path.dirname(os.path.abspath(folder_path))
-        if os.path.exists(parent_dir):
-            parent_csv_files = [f for f in os.listdir(parent_dir) if f.endswith('.csv') and 'ego' in f.lower()]
-            if len(parent_csv_files) > 0:
-                ego_files = sorted(parent_csv_files)
-                print(f"Found {len(ego_files)} ego files in parent directory for {folder_path}")
     
     if len(agent_files) == 0:
         print(f"Warning: No agent files found in {folder_path}. Skipping.")
-        return all_states, all_actions, trajectory_metadata
+        return all_agent_trajectories, trajectory_metadata
     
-    print(f"Processing {folder_path}: Found {len(agent_files)} agent files, {len(ego_files)} ego files.")
+    print(f"Processing {folder_path}: Found {len(agent_files)} agent files.")
     
-    # Extract numbers from filenames and match them
+    # Extract numbers from filenames
     def extract_number(filename):
         match = re.search(r'(\d+)', filename)
         return int(match.group(1)) if match else None
     
-    # Create dictionaries mapping numbers to filenames
-    agent_dict = {}
-    for f in agent_files:
-        num = extract_number(f)
-        if num is not None:
-            agent_dict[num] = f
-    
-    ego_dict = {}
-    for f in ego_files:
-        num = extract_number(f)
-        if num is not None:
-            ego_dict[num] = f
-    
-    # Find matching pairs
-    common_numbers = sorted(set(agent_dict.keys()) & set(ego_dict.keys()))
-    
-    if len(common_numbers) == 0:
-        print(f"Warning: No matching agent/ego pairs found in {folder_path}")
-        return all_states, all_actions, trajectory_metadata
-    
-    print(f"Found {len(common_numbers)} matching agent/ego pairs.")
-    
-    for num in common_numbers:
-        agent_file = os.path.join(folder_path, agent_dict[num])
+    # Process each agent file
+    for agent_file in agent_files:
+        agent_path = os.path.join(folder_path, agent_file)
+        agent_traj = process_agent_only_trajectory(agent_path)
         
-        # Check if ego file is in folder_path or parent directory
-        if num in ego_dict and os.path.exists(os.path.join(folder_path, ego_dict[num])):
-            ego_file = os.path.join(folder_path, ego_dict[num])
-        else:
-            # Try parent directory
-            parent_dir = os.path.dirname(os.path.abspath(folder_path))
-            parent_ego_file = os.path.join(parent_dir, ego_dict[num])
-            if os.path.exists(parent_ego_file):
-                ego_file = parent_ego_file
-            else:
-                print(f"Skipping pair {num}: Ego file not found.")
-                continue
-        
-        # Process this pair using the existing logic
-        s, a = process_single_file_pair(agent_file, ego_file, f"{folder_path}/pair_{num}")
-        if s is not None and a is not None:
-            all_states.append(s)
-            all_actions.append(a)
-            trajectory_metadata.append((folder_path, agent_dict[num], num))
+        if agent_traj is not None:
+            all_agent_trajectories.append(agent_traj)
+            num = extract_number(agent_file)
+            trajectory_metadata.append((folder_path, agent_file, num))
     
-    return all_states, all_actions, trajectory_metadata
+    print(f"Successfully processed {len(all_agent_trajectories)} agent trajectories from {folder_path}")
+    
+    return all_agent_trajectories, trajectory_metadata
 
 def process_noisy_folder(folder_path):
     """
@@ -417,8 +439,7 @@ def main():
     print("PART 1: Processing agent trajectories from noisy folders")
     print("=" * 60)
     
-    all_noisy_states = []
-    all_noisy_actions = []
+    all_noisy_trajectories = []
     all_noisy_categories = []
     all_noisy_metadata = []
     
@@ -430,58 +451,54 @@ def main():
         # Get category for this folder
         category = FOLDER_TO_CATEGORY.get(noisy_folder, 'unknown')
         
-        # Process agent trajectories from this folder (with matching ego files)
-        states, actions, metadata = process_noisy_folder_agent_trajectories(noisy_folder)
+        # Process agent-only trajectories from this folder
+        trajectories, metadata = process_noisy_folder_agent_trajectories(noisy_folder)
         
         # Add category for each trajectory
-        for s, a, meta in zip(states, actions, metadata):
-            all_noisy_states.append(s)
-            all_noisy_actions.append(a)
+        for traj, meta in zip(trajectories, metadata):
+            all_noisy_trajectories.append(traj)
             all_noisy_categories.append(category)
             all_noisy_metadata.append(meta)
     
-    if len(all_noisy_states) == 0:
+    if len(all_noisy_trajectories) == 0:
         print("Warning: No agent trajectories found in noisy folders.")
     else:
-        print(f"\nTotal agent trajectories from noisy folders: {len(all_noisy_states)}")
+        print(f"\nTotal agent trajectories from noisy folders: {len(all_noisy_trajectories)}")
         
         # Random 80/20 train/test split
-        indices = np.arange(len(all_noisy_states))
+        indices = np.arange(len(all_noisy_trajectories))
         train_indices, test_indices = train_test_split(
             indices, test_size=0.2, random_state=42, shuffle=True
         )
         
         # Prepare training data (concatenate all training trajectories)
-        train_states_list = [all_noisy_states[i] for i in train_indices]
-        train_actions_list = [all_noisy_actions[i] for i in train_indices]
-        train_states = np.concatenate(train_states_list, axis=0)
-        train_actions = np.concatenate(train_actions_list, axis=0)
+        train_trajectories = [all_noisy_trajectories[i] for i in train_indices]
+        train_trajectories_concat = np.concatenate(train_trajectories, axis=0)
         
         # Prepare test data (keep as list of trajectories with categories)
-        test_states_list = [all_noisy_states[i] for i in test_indices]
-        test_actions_list = [all_noisy_actions[i] for i in test_indices]
+        test_trajectories = [all_noisy_trajectories[i] for i in test_indices]
         test_categories = [all_noisy_categories[i] for i in test_indices]
         test_metadata = [all_noisy_metadata[i] for i in test_indices]
         
-        print(f"Train trajectories: {len(train_indices)} (total data points: {train_states.shape[0]})")
+        print(f"Train trajectories: {len(train_indices)} (total data points: {train_trajectories_concat.shape[0]})")
         print(f"Test trajectories: {len(test_indices)}")
-        print(f"Train state shape: {train_states.shape}, action shape: {train_actions.shape}")
+        print(f"Train trajectory shape: {train_trajectories_concat.shape}")
         
         # Save training agent data
+        # Format: agent trajectory: [x, y, vx, vy, sx, sy]
         os.makedirs('data', exist_ok=True)
         train_data = {
-            'states': train_states,
-            'actions': train_actions
+            'trajectories': train_trajectories_concat,
+            'metadata': [all_noisy_metadata[i] for i in train_indices]
         }
         np.save('data/expert_agent_trajectories.npy', train_data)
         print(f"Saved training agent data to data/expert_agent_trajectories.npy")
         
         # Save test data with categories
-        # Note: We need to handle the "zigzag" category - check if any trajectories match this
-        # For now, we'll use the categories from folder names
+        # Note: Categories include "keep straight", "left turn", "right turn"
+        # "zigzag" category is not present in folder names - may need to be determined separately
         test_data = {
-            'states': test_states_list,  # List of trajectory arrays
-            'actions': test_actions_list,  # List of trajectory arrays
+            'trajectories': test_trajectories,  # List of trajectory arrays
             'categories': test_categories,
             'metadata': test_metadata
         }
