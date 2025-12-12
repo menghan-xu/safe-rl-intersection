@@ -12,13 +12,16 @@ OUTPUT_FILE = 'data/expert_agent_trajectories.npy' # Output file path
 DT = 0.1  # Sampling time interval (seconds)
 GOAL_Y = 1.5 # Target Y position (optional, for reference)
 
-# Additional data folders to process
+# Additional data folders to process (for train/test split)
 NOISY_DATA_FOLDERS = ['noisy_keep_straight', 'noisy_leftturn', 'noisy_rightturn']
+# Folders that should be treated as test data only (no split)
+TEST_ONLY_FOLDERS = ['zigzag']
 # Map folder names to categories
 FOLDER_TO_CATEGORY = {
     'noisy_keep_straight': 'keep straight',
     'noisy_leftturn': 'left turn',
-    'noisy_rightturn': 'right turn'
+    'noisy_rightturn': 'right turn',
+    'zigzag': 'zigzag'
 }
 
 # State structure: [y_ego, v_ego, x_agent, y_agent, vx_agent, vy_agent, sx_agent, sy_agent]
@@ -443,6 +446,7 @@ def main():
     all_noisy_categories = []
     all_noisy_metadata = []
     
+    # Process folders that will be split 80/20
     for noisy_folder in NOISY_DATA_FOLDERS:
         if not os.path.exists(noisy_folder):
             print(f"Warning: {noisy_folder} does not exist. Skipping.")
@@ -460,6 +464,36 @@ def main():
             all_noisy_categories.append(category)
             all_noisy_metadata.append(meta)
     
+    # Process test-only folders (all go to test data)
+    test_only_trajectories = []
+    test_only_categories = []
+    test_only_metadata = []
+    
+    for test_folder in TEST_ONLY_FOLDERS:
+        if not os.path.exists(test_folder):
+            print(f"Warning: {test_folder} does not exist. Skipping.")
+            continue
+        
+        # Get category for this folder
+        category = FOLDER_TO_CATEGORY.get(test_folder, 'unknown')
+        
+        # Process agent-only trajectories from this folder
+        trajectories, metadata = process_noisy_folder_agent_trajectories(test_folder)
+        
+        # Add all trajectories to test data
+        for traj, meta in zip(trajectories, metadata):
+            test_only_trajectories.append(traj)
+            test_only_categories.append(category)
+            test_only_metadata.append(meta)
+        
+        print(f"Added {len(trajectories)} trajectories from {test_folder} to test data (all trajectories)")
+    
+    # Initialize variables for test data from split
+    test_trajectories_split = []
+    test_categories_split = []
+    test_metadata_split = []
+    train_trajectories_concat = None
+    
     if len(all_noisy_trajectories) == 0:
         print("Warning: No agent trajectories found in noisy folders.")
     else:
@@ -475,13 +509,13 @@ def main():
         train_trajectories = [all_noisy_trajectories[i] for i in train_indices]
         train_trajectories_concat = np.concatenate(train_trajectories, axis=0)
         
-        # Prepare test data (keep as list of trajectories with categories)
-        test_trajectories = [all_noisy_trajectories[i] for i in test_indices]
-        test_categories = [all_noisy_categories[i] for i in test_indices]
-        test_metadata = [all_noisy_metadata[i] for i in test_indices]
+        # Prepare test data from split (keep as list of trajectories with categories)
+        test_trajectories_split = [all_noisy_trajectories[i] for i in test_indices]
+        test_categories_split = [all_noisy_categories[i] for i in test_indices]
+        test_metadata_split = [all_noisy_metadata[i] for i in test_indices]
         
         print(f"Train trajectories: {len(train_indices)} (total data points: {train_trajectories_concat.shape[0]})")
-        print(f"Test trajectories: {len(test_indices)}")
+        print(f"Test trajectories from split: {len(test_indices)}")
         print(f"Train trajectory shape: {train_trajectories_concat.shape}")
         
         # Save training agent data
@@ -493,18 +527,35 @@ def main():
         }
         np.save('data/expert_agent_trajectories.npy', train_data)
         print(f"Saved training agent data to data/expert_agent_trajectories.npy")
-        
+    
+    # Combine all test data (from split + test-only folders)
+    all_test_trajectories = []
+    all_test_categories = []
+    all_test_metadata = []
+    
+    # Add test data from 80/20 split (if any)
+    all_test_trajectories.extend(test_trajectories_split)
+    all_test_categories.extend(test_categories_split)
+    all_test_metadata.extend(test_metadata_split)
+    
+    # Add test-only folder data
+    all_test_trajectories.extend(test_only_trajectories)
+    all_test_categories.extend(test_only_categories)
+    all_test_metadata.extend(test_only_metadata)
+    
+    if len(all_test_trajectories) > 0:
         # Save test data with categories
-        # Note: Categories include "keep straight", "left turn", "right turn"
-        # "zigzag" category is not present in folder names - may need to be determined separately
         test_data = {
-            'trajectories': test_trajectories,  # List of trajectory arrays
-            'categories': test_categories,
-            'metadata': test_metadata
+            'trajectories': all_test_trajectories,  # List of trajectory arrays
+            'categories': all_test_categories,
+            'metadata': all_test_metadata
         }
         np.save('data/test_agent_trajectories.npy', test_data)
-        print(f"Saved test agent data with categories to data/test_agent_trajectories.npy")
-        print(f"  Categories: {set(test_categories)}")
+        print(f"\nSaved test agent data with categories to data/test_agent_trajectories.npy")
+        print(f"  Total test trajectories: {len(all_test_trajectories)}")
+        print(f"  Categories: {set(all_test_categories)}")
+    else:
+        print("Warning: No test trajectories found.")
     
     # ===== PART 2: Process ego data from intersection_data_1106 =====
     print("\n" + "=" * 60)
