@@ -111,15 +111,13 @@ def run_mpc():
         done = False
         steps = 0
         
-        # 记录数据
         ego_traj = []
         agent_traj = []
         ego_v_hist = []
         agent_v_hist = []
-        # 记录这一局是不是因为超时结束的
+
         is_timeout = False 
         
-        # 记录 Environment 返回的 info，看看里面有没有碰撞信息
         final_info = {} 
 
         while not done:
@@ -142,7 +140,7 @@ def run_mpc():
             # 4. Step
             _, _, done, info = env.step(action)
             steps += 1
-            final_info = info # 保存最后一个 info
+            final_info = info 
             
             # 5. Logging
             ego_fixed_x = 0.5
@@ -154,46 +152,28 @@ def run_mpc():
             ego_v_hist.append(ego_v)
             agent_v_hist.append(0)
 
-            # 检查是否超时 (假设最大步数是 200，或者等于 len(agent_traj))
-            # 你的环境可能在超时的时候也会返回 done=True
             if steps >= 200: 
                 is_timeout = True
-                done = True # 强制结束
+                done = True 
 
-        # ==========================================
-        # [关键修复] 判定逻辑
-        # ==========================================
-        
-        # 1. 成功：必须到达目标位置
-        # 注意：这里用 >= 是因为车是往前开的
         is_success = env.state[0] >= cfg['target_pos'][1]
         
-        # 2. 碰撞：如果 Done 了，但既没成功，也不是超时，那就是撞了！
-        # 或者：检查 env 返回的 info 里有没有 crash/collision 字段
-        # 或者：检查 min_dist 是否小于阈值 (双重保险)
-        
-        # 计算最后一帧的距离 (因为循环可能在记录前就 break 了，这里补算一次)
         last_ego_xy = np.array([0.5, env.state[0].item()])
         last_agent_xy = env.current_agent_traj[min(env.steps, len(env.current_agent_traj)-1)][:2]
         final_dist = np.linalg.norm(last_ego_xy - last_agent_xy)
         
-        # 如果 info 里有 'collision' 字段，优先信它
         if final_info.get('collision', False) or final_info.get('crash', False):
             is_collision = True
-        # 如果 info 里有 cost，且 cost 很大，也认为是撞了
-        elif final_info.get('cost', 0) >= 90: # 假设碰撞 cost 是 100
+        elif final_info.get('cost', 0) >= 90: 
             is_collision = True
-        # 否则使用逻辑推断
         elif not is_success and not is_timeout:
             is_collision = True
-        # 最后补一个距离判断
+
         elif final_dist < cfg['collision_dist']:
             is_collision = True
         else:
             is_collision = False
 
-        # 3. 修正 Timeout 判定
-        # 如果没撞，也没成功，那就是超时
         if not is_collision and not is_success:
             is_timeout = True
 
@@ -206,13 +186,10 @@ def run_mpc():
             success_times.append(steps * cfg['dt'])
             status = "SUCCESS"
         elif is_timeout:
-            # timeout_count 在最后统计即可，或者这里也可以加
             status = "TIMEOUT"
             
-        # Animation
         if cfg['save_anim'] and (i % cfg['plot_freq'] == 0):
             fname = f"{cfg['anim_folder']}/mpc_ep_{i}_{status.lower()}.gif"
-            # 这里的 min_dist_ep 传 final_dist 即可，因为那是最后一刻
             save_mpc_gif(ego_traj, agent_traj, ego_v_hist, agent_v_hist, 
                          i, status, final_dist, cfg, fname)
 

@@ -23,7 +23,7 @@ class MPCPilot:
         self.w_track = 1.0
         self.w_comfort = 0.01
         self.w_terminal = 5.0
-        self.w_safety_slack = 100000000000.0 
+        self.w_safety_slack = 1000000000.0 
         
     def solve(self, ego_state, agent_future_traj):
         """
