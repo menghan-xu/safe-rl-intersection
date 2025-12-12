@@ -154,6 +154,38 @@ $\mu_\theta(s_i)$ is the action we chose given the current policy $\pi_{\theta}$
 
 Adding the behavior cloning loss to the total loss with a multiplier $w_{BC}$, we regularize the policy towards expert behavior while still optimizing the RL objective.
 
+
+## Lagrangian PPO with MPC
+### MPC
+```math
+\begin{aligned}
+\min_{\mathbf{u}_t} \quad 
+& \sum_{k=0}^{N-1} \Big(
+w_{\text{track}} (v_{\text{ego}, k} - v_{\text{limit}})^2
++ w_{\text{comfort}} a_k^2
+\Big)
++ w_{\text{terminal}} (y_{\text{ego}, N} - y_{\text{target}})^2 \\
+\text{s.t.}\quad 
+& y_{\text{ego}, k+1}
+= y_{\text{ego}, k}
++ v_{\text{ego}, k} \Delta t
++ \frac{1}{2} a_k \Delta t^2 \\
+& v_{\text{ego}, k+1}
+= v_{\text{ego}, k}
++ a_k \Delta t \\
+& a_{\min} \le a_k \le a_{\max} \\
+& 0 \le v_{\text{ego}, k} \le v_{\max} \\
+& (0.5 - \hat{x}_{\text{agent}, k})^2
++ (y_{\text{ego}, k} - \hat{y}_{\text{agent}, k})^2
+\ge
+\Big(
+R_{\text{ego}} + R_{\text{agent}}
++ \sqrt{\hat{\sigma}_{x, k}^2 + \hat{\sigma}_{y, k}^2}
+\Big)^2
+\end{aligned}
+```
+
+
 ## Some other new ideas
 1. Physics-Informed Residual Architecture
 Introduce a hybrid control scheme where actions are decomposed into $a_t = a_{\text{LQR}}(s_t) + a_{\theta}(s_t)$. The RL agent only learns the residual adjustment ($a_{\theta}$) needed for collision avoidance, while the LQR controller handles vehicle kinematics and stability.
