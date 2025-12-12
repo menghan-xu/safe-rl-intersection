@@ -184,7 +184,8 @@ R_{\text{ego}} + R_{\text{agent}}
 \Big)^2
 \end{aligned}
 ```
-
+### Lagrangian PPO with MPC
+$a = a_{MPC} + a_{residual}$
 
 ## Some other new ideas
 1. Physics-Informed Residual Architecture
