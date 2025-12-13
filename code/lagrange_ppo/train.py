@@ -444,9 +444,10 @@ def evaluate_with_categories(model, test_data_dict, device, config, save_gifs=Fa
         if save_gifs and save_dir:
             if is_success:
                 filename = os.path.join(success_dir, f"test_{ep_i:04d}_{category.replace(' ', '_')}.gif")
+                save_cached_animation(frames_data, filename, title="Success Case Replay")
             else:
                 filename = os.path.join(failure_dir, f"test_{ep_i:04d}_{category.replace(' ', '_')}.gif")
-            save_cached_animation(frames_data, filename)
+                save_cached_animation(frames_data, filename, title="Failure Case Replay")
     
     model.train()
     
@@ -472,12 +473,12 @@ def evaluate_with_categories(model, test_data_dict, device, config, save_gifs=Fa
     return overall_metrics, per_category_metrics, category_results
 
 #  Helper function to save GIF from cached data
-def save_cached_animation(frames_data, filename):
+def save_cached_animation(frames_data, filename, title="Failure Case Replay"):
     fig, ax = plt.subplots(figsize=(6, 7))
     ax.set_xlim(-3.0, 3.0); ax.set_ylim(-3.0, 11.0)
     ax.set_aspect('equal')
     ax.grid(True, linestyle='--', alpha=0.4)
-    ax.set_title(f"Failure Case Replay")
+    ax.set_title(title)
     
     ax.plot([-5, 5], [0, 0], 'k--', alpha=0.3)
     ax.plot([0.5, 0.5], [-5, 15], 'k--', alpha=0.3)
@@ -581,6 +582,13 @@ def main():
     else:
         # Try to load as old format
         train_trajectories = train_data_dict if isinstance(train_data_dict, list) else [train_data_dict]
+    
+    # Shuffle the trajectory list once at the beginning for better randomization
+    # (The environment will still randomly sample, but this ensures uniform distribution)
+    if len(train_trajectories) > 1:
+        np.random.seed(cfg.get('seed', 42))  # Use config seed if available
+        np.random.shuffle(train_trajectories)
+        print(f"Shuffled {len(train_trajectories)} trajectories")
     
     print(f"Loaded training data: {len(train_trajectories)} trajectory set(s)")
     

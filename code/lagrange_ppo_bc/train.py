@@ -291,7 +291,7 @@ def evaluate(model, env, device, num_ep=100, save_gifs=False, save_dir=None):
         if save_gifs and save_dir and saved_failure_gifs < MAX_FAILURE_GIFS:
             if not is_success: # Capture both collision and timeout
                 filename = f"{save_dir}/fail_ep_{ep_i}_col_{is_collision}.gif"
-                save_cached_animation(frames_data, filename)
+                save_cached_animation(frames_data, filename, title="Failure Case Replay")
                 saved_failure_gifs += 1
 
         # Compute Value Loss
@@ -312,13 +312,173 @@ def evaluate(model, env, device, num_ep=100, save_gifs=False, save_dir=None):
     avg_v_loss = np.mean(total_value_loss) if len(total_value_loss) > 0 else 0.0
     return np.mean(total_r), success_count/num_ep, collision_count/num_ep, avg_v_loss, avg_time
 
+def evaluate_with_categories(model, test_data_dict, device, config, save_gifs=False, save_dir=None):
+    """
+    Evaluate model on test data with category tracking.
+    test_data_dict should have keys: 'trajectories', 'categories', 'metadata'
+    Returns overall metrics and per-category metrics.
+    """
+    model.eval()
+    
+    trajectories = test_data_dict['trajectories']
+    categories = test_data_dict['categories']
+    
+    # Overall metrics
+    overall_success = 0
+    overall_collision = 0
+    overall_rewards = []
+    overall_times = []
+    
+    # Per-category metrics
+    category_metrics = {}
+    category_results = {}  # Store results for each episode
+    
+    # Create directories for GIFs if needed
+    if save_gifs and save_dir:
+        success_dir = os.path.join(save_dir, 'test_gifs', 'success')
+        failure_dir = os.path.join(save_dir, 'test_gifs', 'failure')
+        os.makedirs(success_dir, exist_ok=True)
+        os.makedirs(failure_dir, exist_ok=True)
+    
+    print(f"Evaluating on {len(trajectories)} test trajectories...")
+    
+    for ep_i in tqdm(range(len(trajectories)), desc="Evaluating"):
+        # Create a new environment for each test trajectory to ensure proper isolation
+        test_traj = trajectories[ep_i]
+        # Ensure trajectory is numpy array with correct shape
+        if isinstance(test_traj, list):
+            test_traj = np.array(test_traj)
+        elif not isinstance(test_traj, np.ndarray):
+            test_traj = np.array(test_traj)
+        
+        # Create environment with single trajectory
+        test_env = IntersectionGymAdapter([test_traj], config)
+        category = categories[ep_i]
+        
+        # Initialize category tracking if needed
+        if category not in category_metrics:
+            category_metrics[category] = {
+                'success': 0,
+                'collision': 0,
+                'rewards': [],
+                'times': [],
+                'count': 0
+            }
+        
+        obs, _ = test_env.reset()
+        obs = torch.from_numpy(obs).float().to(device).unsqueeze(0)
+        done = False
+        ep_r = 0
+        min_dist = float('inf')
+        ep_steps = 0
+        frames_data = []
+        
+        while not done:
+            # Record frames for GIF
+            if save_gifs:
+                render_info = test_env.env.render()
+                frames_data.append({
+                    'ego_pos': render_info['ego_pos'],
+                    'agent_pos': render_info['agent_pos'],
+                    'ego_v': render_info['ego_v'],
+                    'agent_v': render_info['agent_v']
+                })
+            
+            # Get action
+            with torch.no_grad():
+                x = model.trunk(obs)
+                action = torch.tanh(model.mu_head(x)) * model.max_action
+                action_scalar = action.cpu().numpy().item()
+            
+            # Step
+            next_obs, r, term, trunc, info = test_env.step(action_scalar)
+            
+            if save_gifs and len(frames_data) > 0:
+                frames_data[-1]['info'] = info
+            
+            ep_r += r
+            ep_steps += 1
+            
+            # Update distance
+            render_info = test_env.env.render()
+            e_pos = np.array(render_info['ego_pos'])
+            a_pos = np.array(render_info['agent_pos'])
+            dist = np.linalg.norm(e_pos - a_pos)
+            if dist < min_dist:
+                min_dist = dist
+            
+            done = term or trunc
+            obs = torch.from_numpy(next_obs).float().to(device).unsqueeze(0)
+        
+        # Determine outcome
+        is_success = False
+        is_collision = False
+        target_reached = test_env.env.state[0] >= test_env.env.target_pos[0]
+        
+        if target_reached:
+            is_success = True
+            overall_success += 1
+            category_metrics[category]['success'] += 1
+            overall_times.append(ep_steps * test_env.env.dt)
+            category_metrics[category]['times'].append(ep_steps * test_env.env.dt)
+        
+        if min_dist < test_env.env.collision_dist:
+            is_collision = True
+            overall_collision += 1
+            category_metrics[category]['collision'] += 1
+        
+        overall_rewards.append(ep_r)
+        category_metrics[category]['rewards'].append(ep_r)
+        category_metrics[category]['count'] += 1
+        
+        # Store result for this episode
+        category_results[ep_i] = {
+            'category': category,
+            'success': is_success,
+            'collision': is_collision,
+            'reward': ep_r,
+            'min_dist': min_dist
+        }
+        
+        # Save GIF
+        if save_gifs and save_dir:
+            if is_success:
+                filename = os.path.join(success_dir, f"test_{ep_i:04d}_{category.replace(' ', '_')}.gif")
+                save_cached_animation(frames_data, filename, title="Success Case Replay")
+            else:
+                filename = os.path.join(failure_dir, f"test_{ep_i:04d}_{category.replace(' ', '_')}.gif")
+                save_cached_animation(frames_data, filename, title="Failure Case Replay")
+    
+    model.train()
+    
+    # Compute overall metrics
+    overall_metrics = {
+        'success_rate': overall_success / len(trajectories),
+        'collision_rate': overall_collision / len(trajectories),
+        'avg_reward': np.mean(overall_rewards),
+        'avg_time': np.mean(overall_times) if len(overall_times) > 0 else 0.0
+    }
+    
+    # Compute per-category metrics
+    per_category_metrics = {}
+    for category, metrics in category_metrics.items():
+        per_category_metrics[category] = {
+            'success_rate': metrics['success'] / metrics['count'],
+            'collision_rate': metrics['collision'] / metrics['count'],
+            'avg_reward': np.mean(metrics['rewards']),
+            'avg_time': np.mean(metrics['times']) if len(metrics['times']) > 0 else 0.0,
+            'count': metrics['count']
+        }
+    
+    return overall_metrics, per_category_metrics, category_results
+
 #  Helper function to save GIF from cached data
-def save_cached_animation(frames_data, filename):
+def save_cached_animation(frames_data, filename, title="Failure Case Replay"):
     fig, ax = plt.subplots(figsize=(6, 7))
     ax.set_xlim(-3.0, 3.0); ax.set_ylim(-3.0, 11.0)
     ax.set_aspect('equal')
     ax.grid(True, linestyle='--', alpha=0.4)
-    ax.set_title(f"Failure Case Replay")
+    ax.set_title(title)
     
     ax.plot([-5, 5], [0, 0], 'k--', alpha=0.3)
     ax.plot([0.5, 0.5], [-5, 15], 'k--', alpha=0.3)
@@ -374,9 +534,13 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=str, default="hyperparameters.yaml", help="Path to config file")
     args = parser.parse_args()
+    
+    # Resolve config path relative to script location
+    script_dir = pathlib.Path(__file__).parent
+    config_path = script_dir / args.config
 
     # 1. Load Config
-    with open(args.config, 'r') as f:
+    with open(config_path, 'r') as f:
         cfg = yaml.safe_load(f)
     
     # 2. Setup Directory
@@ -387,13 +551,61 @@ def main():
     with open(f"{run_dir}/config.yaml", 'w') as f:
         yaml.dump(cfg, f)
 
-    # 3. Load Data
-    data_path = "../../data/expert_agent_trajs.npy"
-    if not os.path.exists(data_path):
-        data_path = "data/expert_agent_trajs.npy"
+    # 3. Load Training and Test Data
+    # Training data
+    train_data_path = "../../data/expert_agent_trajectories.npy"
+    if not os.path.exists(train_data_path):
+        train_data_path = "data/expert_agent_trajectories.npy"
     
-    print(f"Loading expert data from {data_path}...")
-    expert_data = np.load(data_path, allow_pickle=True)
+    print(f"Loading training data from {train_data_path}...")
+    train_data_dict = np.load(train_data_path, allow_pickle=True).item()
+    
+    # Extract training trajectories
+    if isinstance(train_data_dict, dict) and 'trajectories' in train_data_dict:
+        # New format: dictionary with 'trajectories' key
+        traj_data = train_data_dict['trajectories']
+        if isinstance(traj_data, np.ndarray):
+            # If it's a concatenated 2D array (N, 6), we can't split it back easily
+            # So we'll use it as a single large trajectory set
+            # The environment will randomly sample from it
+            train_trajectories = [traj_data]  # Wrap in list for compatibility
+        elif isinstance(traj_data, list):
+            train_trajectories = traj_data
+        else:
+            train_trajectories = [traj_data]
+    elif isinstance(train_data_dict, np.ndarray):
+        # Direct numpy array
+        train_trajectories = [train_data_dict]
+    elif isinstance(train_data_dict, list):
+        train_trajectories = train_data_dict
+    else:
+        # Try to load as old format
+        train_trajectories = train_data_dict if isinstance(train_data_dict, list) else [train_data_dict]
+    
+    # Shuffle the trajectory list once at the beginning for better randomization
+    # (The environment will still randomly sample, but this ensures uniform distribution)
+    if len(train_trajectories) > 1:
+        np.random.seed(cfg.get('seed', 42))  # Use config seed if available
+        np.random.shuffle(train_trajectories)
+        print(f"Shuffled {len(train_trajectories)} trajectories")
+    
+    print(f"Loaded training data: {len(train_trajectories)} trajectory set(s)")
+    
+    # Test data
+    test_data_path = "../../data/test_agent_trajectories.npy"
+    if not os.path.exists(test_data_path):
+        test_data_path = "data/test_agent_trajectories.npy"
+    
+    test_data_dict = None
+    if os.path.exists(test_data_path):
+        print(f"Loading test data from {test_data_path}...")
+        test_data_dict = np.load(test_data_path, allow_pickle=True).item()
+        print(f"Loaded {len(test_data_dict['trajectories'])} test trajectories with categories: {set(test_data_dict['categories'])}")
+    else:
+        print(f"Warning: Test data not found at {test_data_path}. Will use training data for evaluation.")
+    
+    # Use training data for environment (for backward compatibility)
+    expert_data = train_trajectories
 
     bc_data_path = "../../data/expert_ego_trajectories.npy" 
     bc_loader = None
@@ -610,33 +822,97 @@ def main():
         torch.save(model.state_dict(), f"{run_dir}/final_model.pt")
     
     # --- FINAL REPORT (TEST PHASE) ---
-    print("Generating Final Report and Test GIFs...")
-    # Pass run_dir to save test GIFs
-    final_r, final_succ, final_coll, final_v_loss,final_time = evaluate(model, eval_env, device, num_ep=100, save_gifs=True, save_dir=run_dir)
+    print("\n" + "="*60)
+    print("FINAL TEST EVALUATION")
+    print("="*60)
     
-    report_path = f"{run_dir}/report.txt"
-    with open(report_path, "w") as f:
-        f.write("="*40 + "\n")
-        f.write("EXPERIMENT REPORT\n")
-        f.write("="*40 + "\n")
-        f.write(f"Date: {datetime.datetime.now()}\n\n")
+    if test_data_dict is not None:
+        # Evaluate on test data with categories
+        print("Evaluating on test data with category tracking...")
+        overall_metrics, per_category_metrics, category_results = evaluate_with_categories(
+            model, test_data_dict, device, cfg, save_gifs=True, save_dir=run_dir
+        )
         
-        f.write("Hyperparameters:\n")
-        for k, v in cfg.items():
-            f.write(f"  {k}: {v}\n")
+        # Write comprehensive report
+        report_path = f"{run_dir}/test_report.txt"
+        with open(report_path, "w") as f:
+            f.write("="*60 + "\n")
+            f.write("TEST EVALUATION REPORT\n")
+            f.write("="*60 + "\n")
+            f.write(f"Date: {datetime.datetime.now()}\n\n")
             
-        f.write("\n" + "-"*40 + "\n")
-        f.write("Final Results (100 Episodes):\n")
-        f.write(f"  Avg Reward      : {final_r:.2f}\n")
-        f.write(f"  Success Rate    : {final_succ*100:.1f}%\n")
-        f.write(f"  Collision Rate  : {final_coll*100:.1f}%\n")
-        f.write(f"  Avg Success Time: {final_time:.2f} s\n")
-        f.write(f"  Eval Value Loss : {final_v_loss:.4f}\n")
-        f.write(f"  Final Lambda    : {lambda_param.item():.4f}\n")
-        f.write("="*40 + "\n")
+            f.write("Hyperparameters:\n")
+            for k, v in cfg.items():
+                f.write(f"  {k}: {v}\n")
+            
+            f.write("\n" + "-"*60 + "\n")
+            f.write("OVERALL TEST RESULTS\n")
+            f.write("-"*60 + "\n")
+            f.write(f"Total Test Episodes: {len(test_data_dict['trajectories'])}\n")
+            f.write(f"Avg Reward         : {overall_metrics['avg_reward']:.2f}\n")
+            f.write(f"Success Rate       : {overall_metrics['success_rate']*100:.1f}%\n")
+            f.write(f"Collision Rate     : {overall_metrics['collision_rate']*100:.1f}%\n")
+            f.write(f"Avg Success Time   : {overall_metrics['avg_time']:.2f} s\n")
+            f.write(f"Final Lambda       : {lambda_param.item():.4f}\n")
+            
+            f.write("\n" + "-"*60 + "\n")
+            f.write("PER-CATEGORY RESULTS\n")
+            f.write("-"*60 + "\n")
+            for category in sorted(per_category_metrics.keys()):
+                metrics = per_category_metrics[category]
+                f.write(f"\nCategory: {category}\n")
+                f.write(f"  Count           : {metrics['count']}\n")
+                f.write(f"  Success Rate    : {metrics['success_rate']*100:.1f}%\n")
+                f.write(f"  Collision Rate  : {metrics['collision_rate']*100:.1f}%\n")
+                f.write(f"  Avg Reward      : {metrics['avg_reward']:.2f}\n")
+                f.write(f"  Avg Success Time: {metrics['avg_time']:.2f} s\n")
+            
+            f.write("\n" + "="*60 + "\n")
         
-    print(f"Report saved to {report_path}")
-    print("Training Finished!")
+        print(f"\nTest Report saved to {report_path}")
+        print("\nOverall Test Results:")
+        print(f"  Success Rate: {overall_metrics['success_rate']*100:.1f}%")
+        print(f"  Collision Rate: {overall_metrics['collision_rate']*100:.1f}%")
+        print(f"  Avg Reward: {overall_metrics['avg_reward']:.2f}")
+        print("\nPer-Category Results:")
+        for category in sorted(per_category_metrics.keys()):
+            metrics = per_category_metrics[category]
+            print(f"  {category}: Success={metrics['success_rate']*100:.1f}%, Collision={metrics['collision_rate']*100:.1f}%, Reward={metrics['avg_reward']:.2f}")
+        
+        print(f"\nTest GIFs saved to {run_dir}/test_gifs/")
+        print(f"  Success: {run_dir}/test_gifs/success/")
+        print(f"  Failure: {run_dir}/test_gifs/failure/")
+    else:
+        # Fallback to old evaluation if test data not available
+        print("Using training data for evaluation (test data not found)...")
+        final_r, final_succ, final_coll, final_v_loss, final_time = evaluate(
+            model, eval_env, device, num_ep=100, save_gifs=True, save_dir=run_dir
+        )
+        
+        report_path = f"{run_dir}/report.txt"
+        with open(report_path, "w") as f:
+            f.write("="*40 + "\n")
+            f.write("EXPERIMENT REPORT\n")
+            f.write("="*40 + "\n")
+            f.write(f"Date: {datetime.datetime.now()}\n\n")
+            
+            f.write("Hyperparameters:\n")
+            for k, v in cfg.items():
+                f.write(f"  {k}: {v}\n")
+            
+            f.write("\n" + "-"*40 + "\n")
+            f.write("Final Results (100 Episodes):\n")
+            f.write(f"  Avg Reward      : {final_r:.2f}\n")
+            f.write(f"  Success Rate    : {final_succ*100:.1f}%\n")
+            f.write(f"  Collision Rate  : {final_coll*100:.1f}%\n")
+            f.write(f"  Avg Success Time: {final_time:.2f} s\n")
+            f.write(f"  Eval Value Loss : {final_v_loss:.4f}\n")
+            f.write(f"  Final Lambda    : {lambda_param.item():.4f}\n")
+            f.write("="*40 + "\n")
+        
+        print(f"Report saved to {report_path}")
+    
+    print("\nTraining and Evaluation Finished!")
 
 if __name__ == "__main__":
     main()
