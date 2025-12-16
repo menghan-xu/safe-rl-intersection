@@ -562,8 +562,18 @@ def main():
     print(f"Loading training data from {train_data_path}...")
     train_data_dict = np.load(train_data_path, allow_pickle=True).item()
     
-    # Extract training trajectories
-    if isinstance(train_data_dict, dict) and 'trajectories' in train_data_dict:
+    # Handle different data formats
+    if 'states' in train_data_dict and 'actions' in train_data_dict:
+        # Format: {'states': [...], 'actions': [...]}
+        # Convert to format expected by environment
+        states = np.array(train_data_dict['states'])
+        # Assuming states are agent trajectories: [x, y, vx, vy, sigma_x, sigma_y]
+        # Take columns [2:8] which should be agent info from the state
+        print(f"Converting data format: states shape {states.shape}")
+        train_trajectories = [states[:, 2:8]]  # Agent data only
+    elif isinstance(train_data_dict, dict) and 'trajectories' in train_data_dict:
+        # Original format handling
+        # Extract training trajectories
         # New format: dictionary with 'trajectories' key
         traj_data = train_data_dict['trajectories']
         if isinstance(traj_data, np.ndarray):
