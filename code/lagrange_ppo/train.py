@@ -16,6 +16,7 @@ from matplotlib.patches import Rectangle
 # Imports
 from env import IntersectionEnv
 from models import ContinuousActorCritic
+from barrier_functions import SimpleCollisionBarrier, SimpleControlBarrier
 
 # ==========================================
 # 1. Gym Adapter
@@ -639,6 +640,11 @@ def main():
     next_o, _ = env.reset(seed=cfg['seed'])
     next_o = torch.from_numpy(next_o).float().to(device)
     
+    # --- Initialize Barrier Functions ---
+    state_barrier = SimpleCollisionBarrier(safety_radius=cfg.get('robot_radius', 0.3328) * 2.0)
+    control_barrier = SimpleControlBarrier(max_accel=cfg['max_accel'])
+    print(f"✓ Barrier functions initialized (rho={model.rho}, K={model.K})")
+    
     # --- Logging Lists ---
     eval_rewards_history = []
     train_loss_history = [] # Total loss
@@ -654,7 +660,28 @@ def main():
         for t in range(steps):
             obs[t] = next_o
             with torch.no_grad():
-                a, lp, _, vr, vc = model.action_value(next_o)
+                a, lp, _, vr, vc = model.action_value(next_o)  # 'a' is virtual action v
+            
+            # Apply Barrier Force Function if enabled
+            if model.use_barriers:
+                a_final = a.clone()
+                for i in range(envs):
+                    obs_i = next_o[i]  # [y_ego, v_ego, x_a, y_a, vx_a, vy_a, sx_a, sy_a]
+                    ego_state = obs_i[:2]
+                    agent_pos = obs_i[2:4]
+                    agent_sigma = obs_i[6:8]
+                    
+                    # State barrier force (collision avoidance)
+                    grad_x = state_barrier.gradient(ego_state, agent_pos, agent_sigma)
+                    
+                    # Control barrier force (acceleration limits)
+                    grad_v = control_barrier.gradient(a[i])
+                    
+                    # Apply BFF: u = v + rho*grad_v + K*grad_x
+                    a_final[i] = a[i] + model.rho * grad_v + model.K * grad_x
+                
+                # Clamp to ensure within physical limits
+                a = torch.clamp(a_final, -cfg['max_accel'], cfg['max_accel'])
             
             acts[t] = a; logp[t] = lp
             val_r[t] = vr; val_c[t] = vc

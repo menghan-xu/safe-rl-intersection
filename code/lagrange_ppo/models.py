@@ -10,9 +10,14 @@ def layer_init(layer, std=0.5, bias_const=0.0):
     return layer
 
 class ContinuousActorCritic(nn.Module):
-    def __init__(self, state_dim, action_dim, max_action=3.2):
+    def __init__(self, state_dim, action_dim, max_action=3.2, use_barriers=True):
         super().__init__()
         self.max_action = max_action
+        
+        # Barrier Force Function parameters
+        self.use_barriers = use_barriers
+        self.rho = 0.1   # Control barrier gain (fixed for now)
+        self.K = 0.05    # State barrier gain (fixed for now)
         
         # Shared Feature Extractor
         self.trunk = nn.Sequential(
