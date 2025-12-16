@@ -33,8 +33,17 @@ class IntersectionEnv:
 
     def reset(self):
         """Resets ego state using Collision Synchronization logic."""
-        # 1. Initialize Ego (Fixed start)
-        self.state = torch.tensor([-1.25, 0.0], dtype=torch.float32) 
+        # 1. Initialize Ego with random starting position
+        # Sample random position within 15cm radius circle around (0.5, -1.25)
+        radius = 0.15  # 15cm in meters
+        angle = np.random.uniform(0, 2 * np.pi)
+        r = radius * np.sqrt(np.random.uniform(0, 1))  # Uniform sampling in circle
+        
+        # Apply offset to starting y-position (x is fixed at 0.5 for ego)
+        y_offset = r * np.cos(angle)
+        y_start = -1.25 + y_offset
+        
+        self.state = torch.tensor([y_start, 0.0], dtype=torch.float32)
         
         # Reset counters
         self.steps = 0 
