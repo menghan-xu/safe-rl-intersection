@@ -1,0 +1,83 @@
+============================================================
+TEST EVALUATION REPORT
+============================================================
+Date: 2025-12-16 02:13:15.458801
+
+Hyperparameters:
+  env_id: Intersection-Lag-v0
+  dt: 0.1
+  max_accel: 3.2
+  v_limit: 1.5
+  target_pos: [1.25, 0.0]
+  robot_radius: 0.3328
+  w_progress: 20
+  w_overspeed: 72.7
+  w_comfort: 0.697
+  reward_success: 200.0
+  reward_collision: -150.0
+  cost_scale_mu: 200
+  cost_crash: 150.0
+  cost_limit: 1
+  lambda_lr: 0.005
+  lambda_init: 0.1
+  seed: 42
+  epochs: 200
+  num_envs: 4
+  num_steps: 2048
+  minibatch_size: 128
+  update_epochs: 10
+  lr: 0.0002
+  gamma: 0.99
+  gae_lambda: 0.95
+  clip_ratio: 0.2
+  ent_coef: 0.01
+  vf_coef: 0.5
+  max_grad_norm: 0.5
+  checkpoint: True
+  save_gif_freq: 50
+  w_time_penalty: 0.5
+  bc_weight: 0.1
+
+------------------------------------------------------------
+OVERALL TEST RESULTS
+------------------------------------------------------------
+Total Test Episodes: 65
+Avg Reward         : 216.49
+Success Rate       : 92.3%
+Collision Rate     : 7.7%
+Avg Success Time   : 5.90 s
+Final Lambda       : 12.6752
+
+------------------------------------------------------------
+PER-CATEGORY RESULTS
+------------------------------------------------------------
+
+Category: left
+  Count           : 20
+  Success Rate    : 100.0%
+  Collision Rate  : 0.0%
+  Avg Reward      : 245.13
+  Avg Success Time: 7.59 s
+
+Category: right
+  Count           : 20
+  Success Rate    : 100.0%
+  Collision Rate  : 0.0%
+  Avg Reward      : 247.55
+  Avg Success Time: 4.42 s
+
+Category: straight
+  Count           : 20
+  Success Rate    : 95.0%
+  Collision Rate  : 5.0%
+  Avg Reward      : 227.09
+  Avg Success Time: 5.66 s
+
+Category: zigzag
+  Count           : 5
+  Success Rate    : 20.0%
+  Collision Rate  : 80.0%
+  Avg Reward      : -64.67
+  Avg Success Time: 6.20 s
+
+============================================================

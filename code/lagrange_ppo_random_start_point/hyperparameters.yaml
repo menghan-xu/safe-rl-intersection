@@ -1,0 +1,164 @@
+# # ==========================================
+# # 1. Physics & Environment
+# # ==========================================
+# env_id: "Intersection-Lag-v0"
+# # The simulation time step duration in seconds
+# # No need to tune
+# dt: 0.1
+# # Max acceleration derived from expert data analysis (~3.2)
+# # Maximum acceleration for the ego vehicle
+# # I set it to 3.2 because in the expert data, the max accel observed is around 3.2 m/s^2
+# # Generally, don't need to tune
+# max_accel: 3.2
+# # Soft speed limit (m/s)
+# # We expect the maximum speed of the Jackal robot to be around 1.5 m/s
+# # Don't need to tune
+# v_limit: 1.5
+# # Target position [y, v] (Cross the intersection at y=1.25)
+# # Don't need to tune
+# target_pos: [1.25, 0.0]  
+# # Robot physical radius (approx 0.33m) -> Collision dist ~0.67m
+# # Don't need to tune
+# robot_radius: 0.3328
+
+# # ==========================================
+# # 2. Reward Weights (Task)
+# # ==========================================
+# # Encourages moving forward 
+# # Controls the urge to move. 
+# # Increase if the agent refuses to move (freezing robot); Decrease if the agent ignores safety just to rush forward
+# w_progress: 30
+# # Penalty coefficient applied when velocity exceeds v_limit
+# # Increase if the agent consistently breaks the speed limit
+# # Decrease if the agent is too afraid to accelerate near the limit
+# w_overspeed: 30
+# # Penalty coefficient for high acceleration (squared).
+# # Increase to encourage smoother driving (less jerky); 
+# # Decrease if the agent feels sluggish or unresponsive to sudden threats
+# w_comfort: 0.697
+# # A large one-time bonus for reaching the target position.
+# # Should be the dominant reward. 
+# # Increase if the agent wanders around without trying to finish the episode
+# reward_success: 150.0
+# # A large one-time penalty for colliding with the agent.
+# # Must be larger than any potential accumulated progress reward. 
+# # Increase magnitude (more negative) if the agent learns that "crashing quickly" is better than "waiting slowly."
+# reward_collision: -100.0
+# w_time_penalty: 0.1
+
+# # ==========================================
+# # 3. Safety Cost Config
+# # ==========================================
+# # Scaling factor for the "Soft Cost" (proximity danger before collision).
+# # Determines how sensitive the agent is to the safety boundary. 
+# # Increase if the agent gets too close to the buffer zone without reacting; 
+# # Decrease if the safety value explodes too early (causing instability)
+# cost_scale_mu: 150
+# # The fixed cost value assigned when a physical collision occurs.
+# # Keep this value high (e.g., 100) to send a strong signal to the Lagrangian multiplier ($\lambda$) that a constraint violation has occurred
+# cost_crash: 100.0
+
+# # ==========================================
+# # 4. Lagrangian PPO Config
+# # ==========================================
+# # Safety budget (d). 0.1 means we want near-zero violations.
+# # The allowed expected cost per episode.
+# # Lower (towards 0) for stricter safety (no violations allowed); 
+# # Higher to tolerate minor safety buffer infringements. 
+# # For autonomous driving, keep this near zero.
+# cost_limit: 1
+# # Learning rate for Lambda (Dual Ascent).
+# # Controls how fast the penalty weight ($\lambda$) grows when constraints are violated.
+# # Increase if the agent continues to collide for many epochs without improvement; 
+# # Decrease if the training oscillates wildly between "safe/stopped" and "fast/crashing."
+# lambda_lr: 0.005
+# # Initial penalty weight ($\lambda_0$).
+# # Start Low to allow the agent to learn how to move first (exploration).
+# # If it crashes immediately and excessively in early training, start Higher.
+# lambda_init: 0.5
+
+# # ==========================================
+# # 5. Training Hyperparameters
+# # ==========================================
+# # Random seed for reproducibility.
+# # Change this to run different experiments with the same parameters.
+# seed: 42
+# # Total number of training iterations.
+# # Increase if the reward hasn't plateaued yet;
+# epochs: 1000
+# # Number of parallel environments to collect data.
+# # Higher values speed up wall-clock time but increase memory usage.
+# num_envs: 4
+# # The number of steps to collect per environment before updating.
+# # Should cover the average episode length. 
+# # Increase if episodes are being cut off too early during rollout.
+# num_steps: 200
+# # Mini-batch size for gradient descent.
+# # Smaller values can add noise (exploration) but might be unstable; Larger values are more stable.
+# minibatch_size: 64
+# # How many times to reuse the collected data for updates.
+# # Increase to improve sample efficiency (squeeze more from data); 
+# # Decrease if the policy overfits to the current batch.
+# update_epochs: 10
+# # Learning rate for the neural networks (Actor and Critics).
+# # Decrease if the loss doesn't decrease or training diverges; 
+# # Increase if learning is extremely slow.
+# lr: 0.0003
+# # Discount factor. 0.99 means the agent cares about future rewards.
+# # Lower (e.g., 0.90) makes the agent more short-sighted. Standard is 0.99.
+# gamma: 0.99
+# # Generalized Advantage Estimation parameter.
+# # Controls the trade-off between bias and variance in advantage calculation. Standard is 0.95.
+# gae_lambda: 0.95
+# # PPO Clip ratio. Limits how much the policy can change in one update.
+# # Standard is 0.2. Lower (0.1) is more conservative/stable; Higher is more aggressive.
+# clip_ratio: 0.2
+# # Entropy coefficient to encourage exploration.
+# # Increase if the agent converges to a suboptimal policy (e.g., always stopping) too early; 
+# # Decrease as training progresses to stabilize behavior.
+# ent_coef: 0.01
+# # Value function coefficient in the loss function.
+# # Balances the importance of training the Critic vs the Actor. Standard is 0.5.
+# vf_coef: 0.5
+# # Max gradient norm for clipping.
+# # Prevents exploding gradients which can crash training. Standard is 0.5.
+# max_grad_norm: 0.5
+# # Whether to save the model during training.
+# checkpoint: true
+# # Frequency (in iterations) to save a GIF of the agent's behavior.
+# save_gif_freq: 100
+
+checkpoint: true
+clip_ratio: 0.2
+cost_crash: 150.0
+cost_limit: 1
+cost_scale_mu: 200
+dt: 0.1
+ent_coef: 0.01
+env_id: Intersection-Lag-v0
+epochs: 300
+gae_lambda: 0.95
+gamma: 0.99
+lambda_init: 0.1
+lambda_lr: 0.002
+lr: 0.0002
+max_accel: 3.2
+max_grad_norm: 0.5
+minibatch_size: 64
+num_envs: 4
+num_steps: 200
+reward_collision: -200.0
+reward_success: 200.0
+robot_radius: 0.3328
+save_gif_freq: 100
+seed: 42
+target_pos:
+- 1.25
+- 0.0
+update_epochs: 10
+v_limit: 1.5
+vf_coef: 0.5
+w_comfort: 0.697
+w_overspeed: 90
+w_progress: 25
+w_time_penalty: 0.5
