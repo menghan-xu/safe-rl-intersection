@@ -399,7 +399,17 @@ def main():
     
     print(f"Loading expert data from {data_path}...")
     expert_data = np.load(data_path, allow_pickle=True)
+    if expert_data.ndim == 0:
+        expert_data = expert_data.item()
 
+    if isinstance(expert_data, dict):
+        print(f"Detected dictionary data with keys: {list(expert_data.keys())}")
+        if 'trajectories' in expert_data:
+            expert_data = expert_data['trajectories']
+        else:
+            raise ValueError("Data dictionary is missing 'trajectories' key!")
+            
+    print(f"Data loaded successfully. Total trajectories: {len(expert_data)}")
     # 4. Setup Training
     if torch.backends.mps.is_available(): device = torch.device("mps")
     elif torch.cuda.is_available(): device = torch.device("cuda")
@@ -437,7 +447,8 @@ def main():
     train_v_loss_history = [] # Value loss
     
     # Track best reward for model saving
-    best_reward = float('-inf')
+    # best_reward = float('-inf')
+    min_loss = float('inf')
     best_epoch = 0
     
     # --- Loop ---
@@ -547,10 +558,18 @@ def main():
             plt.close()
             
             # Track best reward and save model
-            if avg_r > best_reward:
-                best_reward = avg_r
+            # if avg_r > best_reward:
+            #     best_reward = avg_r
+            #     best_epoch = itr
+            #     torch.save(model.state_dict(), f"{run_dir}/best_model.pt")
+            current_loss = train_loss_history[-1] 
+            
+            if current_loss < min_loss:
+                min_loss = current_loss
                 best_epoch = itr
                 torch.save(model.state_dict(), f"{run_dir}/best_model.pt")
+                # 可选：打印一下提示，让你知道模型更新了
+                # tqdm.write(f"  [New Best Model] Loss improved to {min_loss:.4f}")
             
         if itr % cfg['save_gif_freq'] == 0:
             make_animation(model, eval_env, device, f"{run_dir}/iter_{itr}.gif")
@@ -558,42 +577,125 @@ def main():
         if cfg['checkpoint'] and itr % 100 == 0:
             torch.save(model.state_dict(), f"{run_dir}/model_{itr}.pt")
     
-    # Load and save the best model (highest reward epoch) as final model
+
+    # if best_epoch > 0:
+    #     print(f"Loading best model from epoch {best_epoch} with reward {best_reward:.2f}")
+    #     model.load_state_dict(torch.load(f"{run_dir}/best_model.pt"))
+    #     torch.save(model.state_dict(), f"{run_dir}/final_model.pt")
     if best_epoch > 0:
-        print(f"Loading best model from epoch {best_epoch} with reward {best_reward:.2f}")
+        # (Change: Print loss instead of reward)
+        print(f"Loading best model from epoch {best_epoch} with loss {min_loss:.4f}")
         model.load_state_dict(torch.load(f"{run_dir}/best_model.pt"))
         torch.save(model.state_dict(), f"{run_dir}/final_model.pt")
     else:
-        # Fallback: save current model if no evaluation was performed
         torch.save(model.state_dict(), f"{run_dir}/final_model.pt")
     
-    # --- FINAL REPORT (TEST PHASE) ---
-    print("Generating Final Report and Test GIFs...")
-    # Pass run_dir to save test GIFs
-    final_r, final_succ, final_coll, final_v_loss,final_time = evaluate(model, eval_env, device, num_ep=100, save_gifs=True, save_dir=run_dir)
+    # 2. Load Test Data
+    test_data_path = "../../data/expert_agent_trajectories_noise_test_with_zigzag.npy"
+    if not os.path.exists(test_data_path):
+        test_data_path = "data/expert_agent_trajectories_noise_test_with_zigzag.npy"
+
+    print(f"\nLoading TEST data from {test_data_path}...")
+    try:
+        raw_test = np.load(test_data_path, allow_pickle=True)
+        if raw_test.ndim == 0: raw_test = raw_test.item()
+        
+        test_trajs = raw_test['trajectories']
+        test_cats = raw_test['categories']
+        print(f"Test Data Loaded. Total samples: {len(test_trajs)}")
+    except Exception as e:
+        print(f"Failed to load test data: {e}")
+        return
+
+    # 3. Define Evaluation Categories
+    # Split trajectories by category
+    cat_subsets = {'All': test_trajs, 'Straight': [], 'Left': [], 'Right': []}
     
+    for traj, cat in zip(test_trajs, test_cats):
+        # 简单归一化标签字符串
+        c = str(cat).lower()
+        if 'straight' in c: cat_subsets['Straight'].append(traj)
+        elif 'left' in c: cat_subsets['Left'].append(traj)
+        elif 'right' in c: cat_subsets['Right'].append(traj)
+
+    print(f"Test Set Breakdown:")
+    for k, v in cat_subsets.items():
+        if k != 'All':
+            print(f"  - {k}: {len(v)} trajectories")
+
+    # 4. Run Evaluation Loop
+    results = {}
+    
+    print("\nStarting Comprehensive Evaluation...")
     report_path = f"{run_dir}/report.txt"
+    
     with open(report_path, "w") as f:
         f.write("="*40 + "\n")
         f.write("EXPERIMENT REPORT\n")
         f.write("="*40 + "\n")
         f.write(f"Date: {datetime.datetime.now()}\n\n")
-        
         f.write("Hyperparameters:\n")
         for k, v in cfg.items():
             f.write(f"  {k}: {v}\n")
-            
-        f.write("\n" + "-"*40 + "\n")
-        f.write("Final Results (100 Episodes):\n")
-        f.write(f"  Avg Reward      : {final_r:.2f}\n")
-        f.write(f"  Success Rate    : {final_succ*100:.1f}%\n")
-        f.write(f"  Collision Rate  : {final_coll*100:.1f}%\n")
-        f.write(f"  Avg Success Time: {final_time:.2f} s\n")
-        f.write(f"  Eval Value Loss : {final_v_loss:.4f}\n")
-        f.write(f"  Final Lambda    : {lambda_param.item():.4f}\n")
+        f.write("\n" + "="*40 + "\n")
+        f.write("TEST RESULTS\n")
         f.write("="*40 + "\n")
+
+    # Loop through [All, Straight, Left, Right]
+    for cat_name, subset_trajs in cat_subsets.items():
+        if len(subset_trajs) == 0:
+            print(f"Skipping {cat_name} (No data)")
+            continue
+            
+        print(f"Evaluating: {cat_name} ({len(subset_trajs)} samples)...")
         
-    print(f"Report saved to {report_path}")
+        # Create a temporary environment for this subset
+        # We assume the subset is large enough to be random sampled
+        temp_env = IntersectionGymAdapter(subset_trajs, cfg)
+        
+        # Determine number of episodes to run
+        # For 'All', we run 100. For specific categories, we run at least 50 or len(subset)
+        n_eval = 100 if cat_name == 'All' else min(len(subset_trajs), 100)
+        
+        # Save GIFs only for the 'All' category to save space, or specific ones if needed
+        do_save_gif = (cat_name == 'All')
+        subdir = f"{run_dir}" if cat_name == 'All' else None
+        
+        avg_r, succ, coll, _, avg_time = evaluate(
+            model, temp_env, device, 
+            num_ep=n_eval, 
+            save_gifs=do_save_gif, 
+            save_dir=subdir
+        )
+        
+        # Save results
+        results[cat_name] = {
+            'Reward': avg_r,
+            'Success': succ,
+            'Collision': coll,
+            'Time': avg_time
+        }
+        
+        # Append to report immediately
+        with open(report_path, "a") as f:
+            f.write(f"\nCategory: {cat_name}\n")
+            f.write(f"  - Episodes evaluated: {n_eval}\n")
+            f.write(f"  - Avg Reward      : {avg_r:.2f}\n")
+            f.write(f"  - Success Rate    : {succ*100:.1f}%\n")
+            f.write(f"  - Collision Rate  : {coll*100:.1f}%\n")
+            f.write(f"  - Avg Success Time: {avg_time:.2f} s\n")
+            f.write("-" * 30 + "\n")
+
+    # 5. Final Summary Print
+    print("\n" + "="*30)
+    print("FINAL RESULTS SUMMARY")
+    print("="*30)
+    print(f"{'Category':<10} | {'Success':<8} | {'Collision':<10} | {'Time':<6}")
+    print("-" * 40)
+    for cat, res in results.items():
+        print(f"{cat:<10} | {res['Success']*100:5.1f}%   | {res['Collision']*100:5.1f}%     | {res['Time']:.2f}s")
+    print("="*30)
+    print(f"Detailed report saved to {report_path}")
     print("Training Finished!")
 
 if __name__ == "__main__":
