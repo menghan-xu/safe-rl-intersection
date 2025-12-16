@@ -555,9 +555,9 @@ def main():
 
     # 3. Load Training and Test Data
     # Training data
-    train_data_path = "../../data/expert_agent_trajectories.npy"
+    train_data_path = "../../data/expert_agent_trajectories_noise_train.npy"
     if not os.path.exists(train_data_path):
-        train_data_path = "data/expert_agent_trajectories.npy"
+        train_data_path = "data/expert_agent_trajectories_noise_train.npy"
     
     print(f"Loading training data from {train_data_path}...")
     train_data_dict = np.load(train_data_path, allow_pickle=True).item()
@@ -604,9 +604,9 @@ def main():
     print(f"Loaded training data: {len(train_trajectories)} trajectory set(s)")
     
     # Test data
-    test_data_path = "../../data/test_agent_trajectories.npy"
+    test_data_path = "../../data/expert_agent_trajectories_noise_test_with_zigzag.npy"
     if not os.path.exists(test_data_path):
-        test_data_path = "data/test_agent_trajectories.npy"
+        test_data_path = "data/expert_agent_trajectories_noise_test_with_zigzag.npy"
     
     test_data_dict = None
     if os.path.exists(test_data_path):
@@ -651,9 +651,10 @@ def main():
     next_o = torch.from_numpy(next_o).float().to(device)
     
     # --- Initialize Barrier Functions ---
-    state_barrier = SimpleCollisionBarrier(safety_radius=cfg.get('robot_radius', 0.3328) * 2.0)
+    # Add 50% safety margin (2.0 * 1.5 = 3.0x robot radius)
+    state_barrier = SimpleCollisionBarrier(safety_radius=cfg.get('robot_radius', 0.3328) * 3.0)
     control_barrier = SimpleControlBarrier(max_accel=cfg['max_accel'])
-    print(f"✓ Barrier functions initialized (rho={model.rho}, K={model.K})")
+    print(f"✓ Barrier functions initialized (rho={model.rho}, K={model.K}, safety_radius={cfg.get('robot_radius', 0.3328) * 3.0:.3f}m)")
     
     # --- Logging Lists ---
     eval_rewards_history = []

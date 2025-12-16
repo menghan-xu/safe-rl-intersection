@@ -131,7 +131,7 @@
 checkpoint: true
 clip_ratio: 0.2
 cost_crash: 150.0
-cost_limit: 1
+cost_limit: 0.5
 cost_scale_mu: 200
 dt: 0.1
 ent_coef: 0.01
@@ -139,8 +139,8 @@ env_id: Intersection-Lag-v0
 epochs: 300
 gae_lambda: 0.95
 gamma: 0.99
-lambda_init: 0.1
-lambda_lr: 0.002
+lambda_init: 0.5
+lambda_lr: 0.005
 lr: 0.0002
 max_accel: 3.2
 max_grad_norm: 0.5

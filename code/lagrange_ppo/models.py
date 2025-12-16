@@ -16,8 +16,8 @@ class ContinuousActorCritic(nn.Module):
         
         # Barrier Force Function parameters
         self.use_barriers = use_barriers
-        self.rho = 0.1   # Control barrier gain (fixed for now)
-        self.K = 0.05    # State barrier gain (fixed for now)
+        self.rho = 0.2   # Control barrier gain (increased for stronger limits)
+        self.K = 0.5     # State barrier gain (increased 10x for stronger collision avoidance)
         
         # Shared Feature Extractor
         self.trunk = nn.Sequential(
