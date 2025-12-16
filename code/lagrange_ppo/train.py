@@ -393,9 +393,9 @@ def main():
         yaml.dump(cfg, f)
 
     # 3. Load Data
-    data_path = "../../data/expert_agent_trajs.npy"
+    data_path = "../../data/expert_agent_trajectories_noise_train.npy"
     if not os.path.exists(data_path):
-        data_path = "data/expert_agent_trajs.npy"
+        data_path = "data/expert_agent_trajectories_noise_train.npy"
     
     print(f"Loading expert data from {data_path}...")
     expert_data = np.load(data_path, allow_pickle=True)

@@ -4,15 +4,25 @@ import re
 import numpy as np
 import pandas as pd
 from scipy.interpolate import interp1d
+from sklearn.model_selection import train_test_split
 
 # --- Configuration Parameters ---
 DATA_ROOT_DIR = 'intersection_data_1106'  # Root directory of your data
-OUTPUT_FILE = 'data/expert_ego_trajectories.npy' # Output file path
+OUTPUT_FILE = 'data/expert_agent_trajectories.npy' # Output file path
 DT = 0.1  # Sampling time interval (seconds)
 GOAL_Y = 1.5 # Target Y position (optional, for reference)
 
-# Additional data folders to process
+# Additional data folders to process (for train/test split)
 NOISY_DATA_FOLDERS = ['noisy_keep_straight', 'noisy_leftturn', 'noisy_rightturn']
+# Folders that should be treated as test data only (no split)
+TEST_ONLY_FOLDERS = ['zigzag']
+# Map folder names to categories
+FOLDER_TO_CATEGORY = {
+    'noisy_keep_straight': 'keep straight',
+    'noisy_leftturn': 'left turn',
+    'noisy_rightturn': 'right turn',
+    'zigzag': 'zigzag'
+}
 
 # State structure: [y_ego, v_ego, x_agent, y_agent, vx_agent, vy_agent, sx_agent, sy_agent]
 # Action structure: [acc_ego]
@@ -69,6 +79,115 @@ def process_single_scenario(folder_path):
 
     # Use the shared processing function
     return process_single_file_pair(agent_file, ego_file, folder_path)
+
+def process_agent_only_trajectory(agent_file):
+    """
+    Process a single agent-only CSV file (no ego data available).
+    Returns agent trajectory data: [x_agent, y_agent, vx_agent, vy_agent, sx_agent, sy_agent]
+    """
+    try:
+        df_agent = pd.read_csv(agent_file)
+        
+        # Ensure time column exists and is numeric
+        if 'time' not in df_agent.columns:
+            print(f"Warning: {agent_file} missing 'time' column. Skipping.")
+            return None
+        
+        df_agent['time'] = pd.to_numeric(df_agent['time'], errors='coerce')
+        df_agent = df_agent.dropna(subset=['time'])
+        
+        # Get time range
+        t_start = df_agent['time'].iloc[0]
+        t_end = df_agent['time'].iloc[-1]
+        
+        if t_end - t_start < DT:
+            print(f"Warning: {agent_file} duration too short. Skipping.")
+            return None
+        
+        # Create standard time grid
+        num_points = int(np.ceil((t_end - t_start) / DT)) + 1
+        t_grid = np.linspace(t_start, t_end, num_points)
+        t_grid = t_grid[t_grid <= t_end]
+        
+        # Interpolate agent data
+        def interpolate_data(df, target_times):
+            df_times = df['time'].values
+            valid_mask = (target_times >= df_times[0]) & (target_times <= df_times[-1])
+            
+            if not np.all(valid_mask):
+                extrapolated = np.sum(~valid_mask)
+                if extrapolated > len(target_times) * 0.1:
+                    print(f"Warning: {agent_file} requires extrapolation for {extrapolated}/{len(target_times)} points")
+            
+            f = interp1d(df_times, df.values, axis=0, kind='linear', 
+                         bounds_error=False, fill_value="extrapolate")
+            interpolated_data = f(target_times)
+            return pd.DataFrame(interpolated_data, columns=df.columns)
+        
+        agent_interp = interpolate_data(df_agent, t_grid)
+        
+        # Extract agent features: [x_agent, y_agent, vx_agent, vy_agent, sx_agent, sy_agent]
+        x_agent = agent_interp['x'].values
+        y_agent = agent_interp['y'].values
+        vx_agent = agent_interp['vx'].values
+        vy_agent = agent_interp['vy'].values
+        sx_agent = agent_interp['sx'].values
+        sy_agent = agent_interp['sy'].values
+        
+        # Create agent trajectory (N, 6)
+        agent_traj = np.stack([
+            x_agent, y_agent, vx_agent, vy_agent, sx_agent, sy_agent
+        ], axis=1)
+        
+        return agent_traj
+        
+    except Exception as e:
+        print(f"Error processing {agent_file}: {e}")
+        return None
+
+def process_noisy_folder_agent_trajectories(folder_path):
+    """
+    Process a noisy data folder to extract agent-only trajectories.
+    Since ego files are not available, we process agent trajectories directly.
+    Returns list of agent trajectories and their metadata.
+    """
+    all_agent_trajectories = []
+    trajectory_metadata = []  # Store metadata for tracking
+    
+    if not os.path.exists(folder_path):
+        print(f"Warning: Folder {folder_path} does not exist. Skipping.")
+        return all_agent_trajectories, trajectory_metadata
+    
+    # Get all CSV files in the folder
+    csv_files = [f for f in os.listdir(folder_path) if f.endswith('.csv')]
+    
+    # Get agent files only
+    agent_files = sorted([f for f in csv_files if 'agent' in f.lower()])
+    
+    if len(agent_files) == 0:
+        print(f"Warning: No agent files found in {folder_path}. Skipping.")
+        return all_agent_trajectories, trajectory_metadata
+    
+    print(f"Processing {folder_path}: Found {len(agent_files)} agent files.")
+    
+    # Extract numbers from filenames
+    def extract_number(filename):
+        match = re.search(r'(\d+)', filename)
+        return int(match.group(1)) if match else None
+    
+    # Process each agent file
+    for agent_file in agent_files:
+        agent_path = os.path.join(folder_path, agent_file)
+        agent_traj = process_agent_only_trajectory(agent_path)
+        
+        if agent_traj is not None:
+            all_agent_trajectories.append(agent_traj)
+            num = extract_number(agent_file)
+            trajectory_metadata.append((folder_path, agent_file, num))
+    
+    print(f"Successfully processed {len(all_agent_trajectories)} agent trajectories from {folder_path}")
+    
+    return all_agent_trajectories, trajectory_metadata
 
 def process_noisy_folder(folder_path):
     """
@@ -150,6 +269,37 @@ def process_noisy_folder(folder_path):
     
     return all_states, all_actions
 
+def validate_trajectory_alignment(df_agent, df_ego, scenario_name):
+    """
+    Validate that agent and ego trajectories are properly aligned.
+    Returns True if aligned, False otherwise.
+    """
+    # Check time overlap
+    agent_t_start = df_agent['time'].iloc[0]
+    agent_t_end = df_agent['time'].iloc[-1]
+    ego_t_start = df_ego['time'].iloc[0]
+    ego_t_end = df_ego['time'].iloc[-1]
+    
+    overlap_start = max(agent_t_start, ego_t_start)
+    overlap_end = min(agent_t_end, ego_t_end)
+    overlap_duration = overlap_end - overlap_start
+    
+    if overlap_duration < 0.1:  # Less than 100ms overlap
+        print(f"Warning: {scenario_name} has minimal time overlap ({overlap_duration:.3f}s)")
+        return False
+    
+    # Check if time ranges are reasonable
+    agent_duration = agent_t_end - agent_t_start
+    ego_duration = ego_t_end - ego_t_start
+    
+    # If one trajectory is much longer than the other, it might indicate a mismatch
+    duration_ratio = max(agent_duration, ego_duration) / min(agent_duration, ego_duration)
+    if duration_ratio > 2.0:
+        print(f"Warning: {scenario_name} has significant duration mismatch (ratio: {duration_ratio:.2f})")
+        print(f"  Agent: {agent_duration:.2f}s, Ego: {ego_duration:.2f}s")
+    
+    return True
+
 def process_single_file_pair(agent_file, ego_file, scenario_name):
     """
     Process a single agent/ego file pair, returning the (State_Sequence, Action_Sequence) pair.
@@ -166,6 +316,11 @@ def process_single_file_pair(agent_file, ego_file, scenario_name):
     except Exception as e:
         print(f"Error reading {scenario_name}: {e}")
         return None, None
+    
+    # 2.5. Validate trajectory alignment
+    if not validate_trajectory_alignment(df_agent, df_ego, scenario_name):
+        # Don't skip, but warn - the interpolation should handle it
+        pass
 
     # 3. Define Standard Timeline (0.1s interval)
     # Get the time intersection to ensure both ego and agent are present in the scene
@@ -178,14 +333,30 @@ def process_single_file_pair(agent_file, ego_file, scenario_name):
         return None, None
 
     # Create the standard time grid
-    t_grid = np.arange(t_start, t_end, DT)
+    # Use np.linspace to ensure we include points up to (but not beyond) t_end
+    # Calculate number of points to include t_end if possible
+    num_points = int(np.ceil((t_end - t_start) / DT)) + 1
+    t_grid = np.linspace(t_start, t_end, num_points)
+    # Ensure we don't exceed t_end due to floating point precision
+    t_grid = t_grid[t_grid <= t_end]
 
     # 4. Data Interpolation Function
     def interpolate_data(df, target_times):
         # Create interpolation function: input time -> output all columns
         # axis=0 means interpolate along rows
-        # fill_value="extrapolate" allows for minor extrapolation at boundaries
-        f = interp1d(df['time'], df.values, axis=0, kind='linear', fill_value="extrapolate")
+        # Use bounds_error=False and fill_value='extrapolate' but clip to valid range
+        # to avoid large extrapolation errors
+        df_times = df['time'].values
+        valid_mask = (target_times >= df_times[0]) & (target_times <= df_times[-1])
+        
+        if not np.all(valid_mask):
+            # Warn if we need to extrapolate significantly
+            extrapolated = np.sum(~valid_mask)
+            if extrapolated > len(target_times) * 0.1:  # More than 10% extrapolation
+                print(f"Warning: {scenario_name} requires extrapolation for {extrapolated}/{len(target_times)} points")
+        
+        f = interp1d(df_times, df.values, axis=0, kind='linear', 
+                     bounds_error=False, fill_value="extrapolate")
         interpolated_data = f(target_times)
         # Convert back to DataFrame to access by column names
         return pd.DataFrame(interpolated_data, columns=df.columns)
@@ -221,6 +392,7 @@ def process_single_file_pair(agent_file, ego_file, scenario_name):
     # 6. Calculate Action (Acceleration)
     # a_t = (v_{t+1} - v_t) / dt
     # Using np.diff calculates the difference between consecutive elements
+    # Note: acc_ego[i] represents acceleration from t_grid[i] to t_grid[i+1]
     acc_ego = np.diff(v_ego) / DT
     
     # Clip acceleration to strictly adhere to physical limits (e.g., Jackal robot limits)
@@ -229,57 +401,193 @@ def process_single_file_pair(agent_file, ego_file, scenario_name):
 
     # Align State and Action
     # Since np.diff reduces length by 1, we drop the last state to ensure 1-to-1 mapping
+    # states[i] at time t_grid[i] corresponds to action[i] (acceleration from t_grid[i] to t_grid[i+1])
     states = states[:-1]
     actions = acc_ego.reshape(-1, 1) # Reshape to (N, 1)
+    
+    # Verify alignment: states and actions should have the same length
+    if len(states) != len(actions):
+        print(f"Warning: {scenario_name} state-action length mismatch: {len(states)} vs {len(actions)}")
+        return None, None
 
     return states, actions
 
+def process_ego_data_only():
+    """
+    Process all ego data from intersection_data_1106 folder.
+    Returns list of ego trajectories (states and actions).
+    """
+    all_ego_states = []
+    all_ego_actions = []
+    
+    if not os.path.exists(DATA_ROOT_DIR):
+        print(f"Warning: {DATA_ROOT_DIR} does not exist. Skipping ego data processing.")
+        return all_ego_states, all_ego_actions
+    
+    subfolders = [f.path for f in os.scandir(DATA_ROOT_DIR) if f.is_dir()]
+    print(f"Processing ego data from {DATA_ROOT_DIR}: Found {len(subfolders)} scenarios.")
+    
+    for folder in subfolders:
+        # Process each scenario to extract ego data
+        s, a = process_single_scenario(folder)
+        if s is not None:
+            all_ego_states.append(s)
+            all_ego_actions.append(a)
+    
+    return all_ego_states, all_ego_actions
+
 def main():
-    all_states = []
-    all_actions = []
+    # ===== PART 1: Process agent trajectories from noisy folders and split 80/20 =====
+    print("=" * 60)
+    print("PART 1: Processing agent trajectories from noisy folders")
+    print("=" * 60)
     
-    # Process original data structure (subdirectories with agent.csv/ego.csv)
-    if os.path.exists(DATA_ROOT_DIR):
-        subfolders = [f.path for f in os.scandir(DATA_ROOT_DIR) if f.is_dir()]
-        print(f"Processing {DATA_ROOT_DIR}: Found {len(subfolders)} scenarios.")
-        
-        for folder in subfolders:
-            s, a = process_single_scenario(folder)
-            if s is not None:
-                all_states.append(s)
-                all_actions.append(a)
-    else:
-        print(f"Warning: {DATA_ROOT_DIR} does not exist. Skipping.")
+    all_noisy_trajectories = []
+    all_noisy_categories = []
+    all_noisy_metadata = []
     
-    # Process noisy data folders
+    # Process folders that will be split 80/20
     for noisy_folder in NOISY_DATA_FOLDERS:
-        if os.path.exists(noisy_folder):
-            states, actions = process_noisy_folder(noisy_folder)
-            all_states.extend(states)
-            all_actions.extend(actions)
-        else:
+        if not os.path.exists(noisy_folder):
             print(f"Warning: {noisy_folder} does not exist. Skipping.")
-
-    # Concatenate all data
-    if len(all_states) > 0:
-        expert_states = np.concatenate(all_states, axis=0)
-        expert_actions = np.concatenate(all_actions, axis=0)
+            continue
         
-        print(f"\nProcessing complete.")
-        print(f"Total data points: {expert_states.shape[0]}")
-        print(f"State shape: {expert_states.shape}")
-        print(f"Action shape: {expert_actions.shape}")
-
-        # Save the data
-        # Saving as a dictionary for easier loading later
-        save_path = 'data/expert_ego_trajectories.npy'
-        os.makedirs(os.path.dirname(save_path), exist_ok=True)
+        # Get category for this folder
+        category = FOLDER_TO_CATEGORY.get(noisy_folder, 'unknown')
         
-        np.save(save_path, {'states': expert_states, 'actions': expert_actions})
-        print(f"Saved to {save_path}")
+        # Process agent-only trajectories from this folder
+        trajectories, metadata = process_noisy_folder_agent_trajectories(noisy_folder)
         
+        # Add category for each trajectory
+        for traj, meta in zip(trajectories, metadata):
+            all_noisy_trajectories.append(traj)
+            all_noisy_categories.append(category)
+            all_noisy_metadata.append(meta)
+    
+    # Process test-only folders (all go to test data)
+    test_only_trajectories = []
+    test_only_categories = []
+    test_only_metadata = []
+    
+    for test_folder in TEST_ONLY_FOLDERS:
+        if not os.path.exists(test_folder):
+            print(f"Warning: {test_folder} does not exist. Skipping.")
+            continue
+        
+        # Get category for this folder
+        category = FOLDER_TO_CATEGORY.get(test_folder, 'unknown')
+        
+        # Process agent-only trajectories from this folder
+        trajectories, metadata = process_noisy_folder_agent_trajectories(test_folder)
+        
+        # Add all trajectories to test data
+        for traj, meta in zip(trajectories, metadata):
+            test_only_trajectories.append(traj)
+            test_only_categories.append(category)
+            test_only_metadata.append(meta)
+        
+        print(f"Added {len(trajectories)} trajectories from {test_folder} to test data (all trajectories)")
+    
+    # Initialize variables for test data from split
+    test_trajectories_split = []
+    test_categories_split = []
+    test_metadata_split = []
+    train_trajectories_concat = None
+    
+    if len(all_noisy_trajectories) == 0:
+        print("Warning: No agent trajectories found in noisy folders.")
     else:
-        print("No valid data found.")
+        print(f"\nTotal agent trajectories from noisy folders: {len(all_noisy_trajectories)}")
+        
+        # Random 80/20 train/test split
+        indices = np.arange(len(all_noisy_trajectories))
+        train_indices, test_indices = train_test_split(
+            indices, test_size=0.2, random_state=42, shuffle=True
+        )
+        
+        # Prepare training data (concatenate all training trajectories)
+        train_trajectories = [all_noisy_trajectories[i] for i in train_indices]
+        train_trajectories_concat = np.concatenate(train_trajectories, axis=0)
+        
+        # Prepare test data from split (keep as list of trajectories with categories)
+        test_trajectories_split = [all_noisy_trajectories[i] for i in test_indices]
+        test_categories_split = [all_noisy_categories[i] for i in test_indices]
+        test_metadata_split = [all_noisy_metadata[i] for i in test_indices]
+        
+        print(f"Train trajectories: {len(train_indices)} (total data points: {train_trajectories_concat.shape[0]})")
+        print(f"Test trajectories from split: {len(test_indices)}")
+        print(f"Train trajectory shape: {train_trajectories_concat.shape}")
+        
+        # Save training agent data
+        # Format: agent trajectory: [x, y, vx, vy, sx, sy]
+        os.makedirs('data', exist_ok=True)
+        train_data = {
+            'trajectories': train_trajectories_concat,
+            'metadata': [all_noisy_metadata[i] for i in train_indices]
+        }
+        np.save('data/expert_agent_trajectories.npy', train_data)
+        print(f"Saved training agent data to data/expert_agent_trajectories.npy")
+    
+    # Combine all test data (from split + test-only folders)
+    all_test_trajectories = []
+    all_test_categories = []
+    all_test_metadata = []
+    
+    # Add test data from 80/20 split (if any)
+    all_test_trajectories.extend(test_trajectories_split)
+    all_test_categories.extend(test_categories_split)
+    all_test_metadata.extend(test_metadata_split)
+    
+    # Add test-only folder data
+    all_test_trajectories.extend(test_only_trajectories)
+    all_test_categories.extend(test_only_categories)
+    all_test_metadata.extend(test_only_metadata)
+    
+    if len(all_test_trajectories) > 0:
+        # Save test data with categories
+        test_data = {
+            'trajectories': all_test_trajectories,  # List of trajectory arrays
+            'categories': all_test_categories,
+            'metadata': all_test_metadata
+        }
+        np.save('data/test_agent_trajectories.npy', test_data)
+        print(f"\nSaved test agent data with categories to data/test_agent_trajectories.npy")
+        print(f"  Total test trajectories: {len(all_test_trajectories)}")
+        print(f"  Categories: {set(all_test_categories)}")
+    else:
+        print("Warning: No test trajectories found.")
+    
+    # ===== PART 2: Process ego data from intersection_data_1106 =====
+    print("\n" + "=" * 60)
+    print("PART 2: Processing ego data from intersection_data_1106")
+    print("=" * 60)
+    
+    ego_states, ego_actions = process_ego_data_only()
+    
+    if len(ego_states) > 0:
+        # Concatenate all ego data
+        expert_ego_states = np.concatenate(ego_states, axis=0)
+        expert_ego_actions = np.concatenate(ego_actions, axis=0)
+        
+        print(f"\nEgo data processing complete.")
+        print(f"Total ego data points: {expert_ego_states.shape[0]}")
+        print(f"Ego state shape: {expert_ego_states.shape}")
+        print(f"Ego action shape: {expert_ego_actions.shape}")
+        
+        # Save ego data
+        os.makedirs('data', exist_ok=True)
+        ego_data = {
+            'states': expert_ego_states,
+            'actions': expert_ego_actions
+        }
+        np.save('data/expert_ego_trajectories.npy', ego_data)
+        print(f"Saved ego data to data/expert_ego_trajectories.npy")
+    else:
+        print("Warning: No ego data found.")
+    
+    print("\n" + "=" * 60)
+    print("All processing complete!")
+    print("=" * 60)
 
 if __name__ == "__main__":
     main()

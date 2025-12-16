@@ -57,7 +57,7 @@ class ContinuousActorCritic(nn.Module):
 
         return action, log_prob, entropy, val_r, val_c
 
-    @torch.no_grad
+    @torch.no_grad()
     def value(self, state):
         """Returns both (V_R, V_C)"""
         x = self.trunk(state)

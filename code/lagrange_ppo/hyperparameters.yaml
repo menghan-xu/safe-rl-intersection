@@ -128,7 +128,7 @@
 # # Frequency (in iterations) to save a GIF of the agent's behavior.
 # save_gif_freq: 100
 
-checkpoint: True
+checkpoint: true
 clip_ratio: 0.2
 cost_crash: 150.0
 cost_limit: 1
@@ -152,7 +152,9 @@ reward_success: 200.0
 robot_radius: 0.3328
 save_gif_freq: 100
 seed: 42
-target_pos: [1.25, 0.0]
+target_pos:
+- 1.25
+- 0.0
 update_epochs: 10
 v_limit: 1.5
 vf_coef: 0.5

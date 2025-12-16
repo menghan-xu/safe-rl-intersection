@@ -6,12 +6,12 @@ scipy
 scikit-learn
 
 # Visualization & Plotting
-matplotlib==3.10.8
+matplotlib==3.10.7
 
 # Reinforcement Learning Environment
 gymnasium==0.29.1
 pygame==2.6.1
-box2d-py==2.3.5
+#box2d-py==2.3.5
 
 # Utilities
 tqdm==4.65.0
