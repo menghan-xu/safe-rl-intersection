@@ -1,0 +1,30 @@
+OVERALL (65 episodes):
+  Success Rate    : 55.4%
+  Collision Rate  : 0.0%
+  Avg Reward      : -11.78
+  Avg Time (Succ) : 5.31 s
+------------------------------------------------------------
+CATEGORY: left (20 episodes)
+  Success Rate    : 80.0%
+  Collision Rate  : 0.0%
+  Avg Reward      : 74.47
+  Avg Time (Succ) : 9.46 s
+------------------------------
+CATEGORY: right (20 episodes)
+  Success Rate    : 100.0%
+  Collision Rate  : 0.0%
+  Avg Reward      : 156.60
+  Avg Time (Succ) : 2.00 s
+------------------------------
+CATEGORY: straight (20 episodes)
+  Success Rate    : 0.0%
+  Collision Rate  : 0.0%
+  Avg Reward      : -214.22
+  Avg Time (Succ) : 0.00 s
+------------------------------
+CATEGORY: zigzag (5 episodes)
+  Success Rate    : 0.0%
+  Collision Rate  : 0.0%
+  Avg Reward      : -220.59
+  Avg Time (Succ) : 0.00 s
+------------------------------
