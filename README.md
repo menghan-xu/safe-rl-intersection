@@ -135,4 +135,4 @@ Experiments in high-fidelity simulation and on hardware (Clearpath Jackal robots
 
 For more details, please refer to our final report:
 
-**[Uncertainty-Aware Collision Avoidance via Safe RL](Uncertainty Aware Collision Avoidance through Safe Reinforcement Learning.pdf)**
+**[Uncertainty-Aware Collision Avoidance via Safe RL](Uncertainty%20Aware%20Collision%20Avoidance%20through%20Safe%20Reinforcement%20Learning.pdf)**
